@@ -275,6 +275,7 @@ CREATE TABLE products (
 
     image VARCHAR(500) NULL,
 
+    location VARCHAR(255) NULL,
 
     /* =====================================================
        ADMIN APPROVAL

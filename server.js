@@ -12,25 +12,18 @@ const db = require("./config/db");
 
 const app = express();
 const PORT = Number(process.env.PORT || 8080);
+const APP_NAME = "Charcoal Marketplace API";
 
 app.set("trust proxy", 1);
 
-
 /* =========================================================
-   APPLICATION INFORMATION
+   CONFIGURATION
 ========================================================= */
-
-const APP_NAME = "Charcoal Marketplace API";
 
 const configuredOrigins = (process.env.FRONTEND_ORIGINS || "")
   .split(",")
   .map(s => s.trim())
   .filter(Boolean);
-
-
-/* =========================================================
-   DIAGNOSTIC STATE
-========================================================= */
 
 const routeStatus = {};
 
@@ -38,6 +31,7 @@ const requiredTables = [
   "users",
   "products",
   "orders",
+  "order_items",
   "payments",
   "payment_logs",
   "cart",
@@ -49,83 +43,20 @@ const requiredTables = [
 
 let databaseStatus = "checking";
 
-
-/* =========================================================
-   STARTUP LOGGER
-========================================================= */
-
 function startupLine() {
-  console.log(
-    "=================================================="
-  );
+  console.log("==================================================");
 }
-
-
-/* =========================================================
-   ROUTE LOADER
-   This makes route problems visible in Railway logs.
-========================================================= */
-
-function loadRoute(routeName, mountPath, routeFile) {
-
-  try {
-
-    const router = require(routeFile);
-
-    if (!router) {
-      throw new Error("Router returned empty value");
-    }
-
-    app.use(mountPath, router);
-
-    routeStatus[routeName] = {
-      status: "loaded",
-      mount: mountPath,
-      file: routeFile
-    };
-
-    console.log(
-      `✅ ${mountPath} → ${routeFile} LOADED`
-    );
-
-    return true;
-
-  } catch (error) {
-
-    routeStatus[routeName] = {
-      status: "failed",
-      mount: mountPath,
-      file: routeFile,
-      error: error.message
-    };
-
-    console.error(
-      `❌ ${mountPath} → ${routeFile} FAILED`
-    );
-
-    console.error(
-      `   ERROR: ${error.message}`
-    );
-
-    return false;
-  }
-}
-
 
 /* =========================================================
    CORS
+   Same-origin Railway frontend/API requests do not need CORS.
+   CORS remains available for optional external clients.
 ========================================================= */
 
 app.use(
   cors({
-
     origin: (origin, callback) => {
-
-      if (!origin) {
-        return callback(null, true);
-      }
-
-      if (!configuredOrigins.length) {
+      if (!origin || !configuredOrigins.length) {
         return callback(null, true);
       }
 
@@ -133,12 +64,8 @@ app.use(
         return callback(null, true);
       }
 
-      return callback(
-        new Error("CORS origin not allowed")
-      );
-
+      return callback(new Error("CORS origin not allowed"));
     },
-
     methods: [
       "GET",
       "POST",
@@ -147,20 +74,18 @@ app.use(
       "DELETE",
       "OPTIONS"
     ],
-
     allowedHeaders: [
       "Content-Type",
-      "Authorization"
+      "Authorization",
+      "Accept",
+      "X-Request-ID"
     ],
-
     credentials: false
-
   })
 );
 
-
 /* =========================================================
-   SECURITY / PERFORMANCE
+   SECURITY
 ========================================================= */
 
 app.use(
@@ -168,6 +93,14 @@ app.use(
     crossOriginResourcePolicy: {
       policy: "cross-origin"
     },
+
+    /*
+     * External Pi SDK + Font Awesome are explicitly allowed.
+     * COEP/COOP are disabled because Pi SDK/browser integrations
+     * can depend on cross-origin resources.
+     */
+    crossOriginEmbedderPolicy: false,
+    crossOriginOpenerPolicy: false,
 
     contentSecurityPolicy: {
       directives: {
@@ -184,7 +117,8 @@ app.use(
 
         styleSrc: [
           "'self'",
-          "'unsafe-inline'"
+          "'unsafe-inline'",
+          "https://cdnjs.cloudflare.com"
         ],
 
         imgSrc: [
@@ -236,471 +170,63 @@ app.use(
   })
 );
 
-
 /* =========================================================
    AUTH RATE LIMIT
 ========================================================= */
 
 const authLimiter = rateLimit({
-
   windowMs: 15 * 60 * 1000,
-
   max: 100,
-
   standardHeaders: true,
-
   legacyHeaders: false
-
 });
+
+app.use("/api/auth", authLimiter);
+
+/* =========================================================
+   ROOT / STATIC FRONTEND
+========================================================= */
+
+const publicRoot = __dirname;
+
+app.get("/", (_req, res) => {
+  res.set("Cache-Control", "no-store");
+  res.sendFile(path.join(publicRoot, "index.html"));
+});
+
+/* Friendly aliases for the main HTML pages. */
+const pageAliases = {
+  "/home": "home.html",
+  "/profile": "profile.html",
+  "/vendor": "vendor.html",
+  "/checkout": "checkout.html",
+  "/admin-login": "admin-login.html",
+  "/vendor-login": "vendor-login.html",
+  "/admin": "admin.html"
+};
+
+for (const [url, file] of Object.entries(pageAliases)) {
+  app.get(url, (_req, res) => {
+    res.redirect(302, `/${file}`);
+  });
+}
 
 app.use(
-  "/api/auth",
-  authLimiter
+  express.static(publicRoot, {
+    index: false,
+    extensions: false,
+    maxAge: 0
+  })
 );
 
 /* =========================================================
-   BASIC ROOT ENDPOINT
-========================================================= */
-
-app.use(express.static(__dirname));
-
-app.get("/", (req, res) => {
-  res.sendFile(
-    path.join(__dirname, "index.html")
-  );
-});
-
-
-/* =========================================================
-   BASIC HEALTH ENDPOINT
-========================================================= */
-
-app.get("/health", (req, res) => {
-
-  res.json({
-
-    success: true,
-
-    status: "healthy",
-
-    service: APP_NAME,
-
-    timestamp:
-      new Date().toISOString()
-
-  });
-
-});
-
-
-/* =========================================================
-   API HEALTH CHECK
-   GET /api/health
-========================================================= */
-
-app.get("/api/health", async (req, res) => {
-
-  let database = "disconnected";
-
-  try {
-
-    await new Promise((resolve, reject) => {
-
-      db.query(
-        "SELECT 1 AS connected",
-        (err, rows) => {
-
-          if (err) {
-            return reject(err);
-          }
-
-          resolve(rows);
-
-        }
-      );
-
-    });
-
-    database = "connected";
-
-  } catch (error) {
-
-    database = "disconnected";
-
-  }
-
-
-  const failedRoutes =
-    Object.entries(routeStatus)
-      .filter(
-        ([, value]) =>
-          value.status !== "loaded"
-      );
-
-
-  const failedRouteCount =
-    failedRoutes.length;
-
-
-  const overallHealthy =
-    database === "connected" &&
-    failedRouteCount === 0;
-
-
-  res.status(
-    overallHealthy ? 200 : 503
-  ).json({
-
-    success: overallHealthy,
-
-    status:
-      overallHealthy
-        ? "healthy"
-        : "degraded",
-
-    service: APP_NAME,
-
-    environment:
-      process.env.NODE_ENV || "development",
-
-    database,
-
-    routes: {
-
-      total:
-        Object.keys(routeStatus).length,
-
-      loaded:
-        Object.values(routeStatus)
-          .filter(
-            route =>
-              route.status === "loaded"
-          ).length,
-
-      failed:
-        failedRouteCount
-
-    },
-
-    pi: {
-
-      api_key:
-        process.env.PI_API_KEY
-          ? "configured"
-          : "missing",
-
-      super_admin:
-        process.env.PI_SUPER_ADMIN_USERNAME
-          ? "configured"
-          : "missing"
-
-    },
-
-    cors: {
-
-      configured:
-        configuredOrigins.length > 0,
-
-      origins:
-        configuredOrigins.length
-
-    },
-
-    timestamp:
-      new Date().toISOString()
-
-  });
-
-});
-
-
-/* =========================================================
-   ROUTE STATUS
-   GET /api/health/routes
-========================================================= */
-
-app.get(
-  "/api/health/routes",
-  (req, res) => {
-
-    const routes =
-      Object.entries(routeStatus)
-        .map(([name, info]) => ({
-
-          name,
-
-          status:
-            info.status,
-
-          mount:
-            info.mount,
-
-          file:
-            info.file,
-
-          ...(info.error
-            ? {
-                error:
-                  info.error
-              }
-            : {})
-
-        }));
-
-
-    const failed =
-      routes.filter(
-        route =>
-          route.status !== "loaded"
-      );
-
-
-    res.status(
-      failed.length ? 503 : 200
-    ).json({
-
-      success:
-        failed.length === 0,
-
-      total:
-        routes.length,
-
-      loaded:
-        routes.filter(
-          route =>
-            route.status === "loaded"
-        ).length,
-
-      failed:
-        failed.length,
-
-      routes
-
-    });
-
-  }
-);
-
-
-/* =========================================================
-   DATABASE TABLE CHECK
-   GET /api/health/database
-========================================================= */
-
-app.get(
-  "/api/health/database",
-  async (req, res) => {
-
-    const tables = {};
-
-    let failedCount = 0;
-
-
-    for (const table of requiredTables) {
-
-      try {
-
-        await new Promise(
-          (resolve, reject) => {
-
-            db.query(
-              `SELECT 1 FROM \`${table}\` LIMIT 1`,
-              (err) => {
-
-                if (err) {
-                  return reject(err);
-                }
-
-                resolve();
-
-              }
-            );
-
-          }
-        );
-
-
-        tables[table] = {
-          status: "OK"
-        };
-
-
-      } catch (error) {
-
-        failedCount++;
-
-        tables[table] = {
-
-          status:
-            "MISSING_OR_ERROR",
-
-          error:
-            error.message
-
-        };
-
-      }
-
-    }
-
-
-    const success =
-      failedCount === 0;
-
-
-    res.status(
-      success ? 200 : 503
-    ).json({
-
-      success,
-
-      database:
-        success
-          ? "READY"
-          : "NOT READY",
-
-      total:
-        requiredTables.length,
-
-      working:
-        requiredTables.length -
-        failedCount,
-
-      failed:
-        failedCount,
-
-      tables
-
-    });
-
-  }
-);
-
-
-/* =========================================================
-   LOAD API ROUTES
-========================================================= */
-
-console.log("");
-startupLine();
-
-console.log(
-  "🔌 LOADING API ROUTES"
-);
-
-startupLine();
-
-
-/*
-=========================================================
-AUTH
-=========================================================
-*/
-
-loadRoute(
-  "auth",
-  "/api/auth",
-  "./routes/auth.routes"
-);
-
-
-/*
-=========================================================
-PRODUCTS
-=========================================================
-*/
-
-loadRoute(
-  "products",
-  "/api/products",
-  "./routes/product.routes"
-);
-
-
-/*
-=========================================================
-ORDERS
-=========================================================
-*/
-
-loadRoute(
-  "orders",
-  "/api/orders",
-  "./routes/orders.routes"
-);
-
-
-/*
-=========================================================
-PAYMENTS
-=========================================================
-*/
-
-loadRoute(
-  "payments",
-  "/api/payments",
-  "./routes/payment.routes"
-);
-
-
-/*
-=========================================================
-ADMIN
-=========================================================
-*/
-
-loadRoute(
-  "admin",
-  "/api/admin",
-  "./routes/admin.routes"
-);
-
-
-/*
-=========================================================
-ADMIN REQUEST
-=========================================================
-*/
-
-loadRoute(
-  "admin-request",
-  "/api/admin-request",
-  "./routes/adminRequest.routes"
-);
-
-
-/*
-=========================================================
-NOTIFICATIONS
-=========================================================
-*/
-
-loadRoute(
-  "notifications",
-  "/api/notifications",
-  "./routes/notifications.routes"
-);
-
-
-startupLine();
-
-console.log(
-  "🔌 ROUTE LOADING FINISHED"
-);
-
-startupLine();
-
-console.log("");
-
-
-/* =========================================================
-   STATIC UPLOADS
+   UPLOADS
 ========================================================= */
 
 app.use(
   "/uploads",
   express.static(
-    path.join(__dirname, "uploads"),
+    path.join(publicRoot, "uploads"),
     {
       maxAge: "7d",
       index: false
@@ -708,306 +234,364 @@ app.use(
   )
 );
 
-
 /* =========================================================
-   404 HANDLER
+   HEALTH
 ========================================================= */
 
-app.use(
-  (req, res) => {
+app.get("/health", (_req, res) => {
+  res.json({
+    success: true,
+    status: "healthy",
+    service: APP_NAME,
+    environment:
+      process.env.NODE_ENV || "development",
+    timestamp: new Date().toISOString()
+  });
+});
 
-    res.status(404).json({
+app.get("/api/health", async (_req, res) => {
+  let database = "disconnected";
 
-      success: false,
-
-      message:
-        "Route not found",
-
-      path:
-        req.originalUrl,
-
-      method:
-        req.method
-
+  try {
+    await new Promise((resolve, reject) => {
+      db.query(
+        "SELECT 1 AS connected",
+        (err, rows) => {
+          if (err) return reject(err);
+          resolve(rows);
+        }
+      );
     });
 
+    database = "connected";
+  } catch {}
+
+  const failedRoutes =
+    Object.values(routeStatus).filter(
+      route => route.status !== "loaded"
+    );
+
+  const loadedRoutes =
+    Object.values(routeStatus).filter(
+      route => route.status === "loaded"
+    );
+
+  const healthy =
+    database === "connected" &&
+    failedRoutes.length === 0;
+
+  res.status(healthy ? 200 : 503).json({
+    success: healthy,
+    status: healthy ? "healthy" : "degraded",
+    service: APP_NAME,
+    environment:
+      process.env.NODE_ENV || "development",
+    database,
+    routes: {
+      total: Object.keys(routeStatus).length,
+      loaded: loadedRoutes.length,
+      failed: failedRoutes.length
+    },
+    pi: {
+      api_key:
+        process.env.PI_API_KEY
+          ? "configured"
+          : "missing",
+      super_admin:
+        process.env.PI_SUPER_ADMIN_USERNAME
+          ? "configured"
+          : "missing"
+    },
+    cors: {
+      configured: configuredOrigins.length > 0,
+      origins: configuredOrigins.length
+    },
+    timestamp: new Date().toISOString()
+  });
+});
+
+app.get("/api/health/routes", (_req, res) => {
+  const routes =
+    Object.entries(routeStatus).map(
+      ([name, info]) => ({
+        name,
+        status: info.status,
+        mount: info.mount,
+        file: info.file,
+        ...(info.error
+          ? { error: info.error }
+          : {})
+      })
+    );
+
+  const failed =
+    routes.filter(
+      route => route.status !== "loaded"
+    );
+
+  res.status(failed.length ? 503 : 200).json({
+    success: failed.length === 0,
+    total: routes.length,
+    loaded:
+      routes.filter(
+        route => route.status === "loaded"
+      ).length,
+    failed: failed.length,
+    routes
+  });
+});
+
+app.get("/api/health/database", async (_req, res) => {
+  const tables = {};
+  let failedCount = 0;
+
+  for (const table of requiredTables) {
+    try {
+      await new Promise(
+        (resolve, reject) => {
+          db.query(
+            `SELECT 1 FROM \`${table}\` LIMIT 1`,
+            err => {
+              if (err) return reject(err);
+              resolve();
+            }
+          );
+        }
+      );
+
+      tables[table] = {
+        status: "OK"
+      };
+    } catch (error) {
+      failedCount++;
+
+      tables[table] = {
+        status: "MISSING_OR_ERROR",
+        error: error.message
+      };
+    }
   }
+
+  const success = failedCount === 0;
+
+  res.status(success ? 200 : 503).json({
+    success,
+    database: success ? "READY" : "NOT READY",
+    total: requiredTables.length,
+    working:
+      requiredTables.length - failedCount,
+    failed: failedCount,
+    tables
+  });
+});
+
+/* =========================================================
+   ROUTE LOADER
+========================================================= */
+
+function loadRoute(
+  routeName,
+  mountPath,
+  routeFile
+) {
+  try {
+    const router = require(routeFile);
+
+    if (!router) {
+      throw new Error("Router returned empty value");
+    }
+
+    app.use(mountPath, router);
+
+    routeStatus[routeName] = {
+      status: "loaded",
+      mount: mountPath,
+      file: routeFile
+    };
+
+    console.log(
+      `✅ ${mountPath} → ${routeFile} LOADED`
+    );
+
+    return true;
+  } catch (error) {
+    routeStatus[routeName] = {
+      status: "failed",
+      mount: mountPath,
+      file: routeFile,
+      error: error.message
+    };
+
+    console.error(
+      `❌ ${mountPath} → ${routeFile} FAILED`
+    );
+    console.error(
+      `   ERROR: ${error.stack || error.message}`
+    );
+
+    return false;
+  }
+}
+
+/* =========================================================
+   API ROUTES
+========================================================= */
+
+console.log("");
+startupLine();
+console.log("🔌 LOADING API ROUTES");
+startupLine();
+
+loadRoute(
+  "auth",
+  "/api/auth",
+  "./routes/auth.routes"
 );
 
+loadRoute(
+  "products",
+  "/api/products",
+  "./routes/product.routes"
+);
+
+loadRoute(
+  "orders",
+  "/api/orders",
+  "./routes/orders.routes"
+);
+
+loadRoute(
+  "payments",
+  "/api/payments",
+  "./routes/payment.routes"
+);
+
+loadRoute(
+  "admin",
+  "/api/admin",
+  "./routes/admin.routes"
+);
+
+loadRoute(
+  "admin-request",
+  "/api/admin-request",
+  "./routes/adminRequest.routes"
+);
+
+loadRoute(
+  "notifications",
+  "/api/notifications",
+  "./routes/notifications.routes"
+);
+
+startupLine();
+console.log("🔌 ROUTE LOADING FINISHED");
+startupLine();
+console.log("");
+
+/* =========================================================
+   404
+========================================================= */
+
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    message: "Route not found",
+    path: req.originalUrl,
+    method: req.method
+  });
+});
 
 /* =========================================================
    GLOBAL ERROR HANDLER
 ========================================================= */
 
-app.use(
-  (err, req, res, next) => {
+app.use((err, req, res, _next) => {
+  console.error("==================================================");
+  console.error("❌ SERVER ERROR");
+  console.error("Message:", err.message);
+  console.error("Path:", req.originalUrl);
+  console.error("Method:", req.method);
+  console.error("==================================================");
 
-    console.error(
-      "=================================================="
-    );
-
-    console.error(
-      "❌ SERVER ERROR"
-    );
-
-    console.error(
-      "=================================================="
-    );
-
-    console.error(
-      "Message:",
-      err.message
-    );
-
-    console.error(
-      "Path:",
-      req.originalUrl
-    );
-
-    console.error(
-      "Method:",
-      req.method
-    );
-
-    console.error(
-      "=================================================="
-    );
-
-
-    if (
-      err.message ===
-      "CORS origin not allowed"
-    ) {
-
-      return res.status(403).json({
-
-        success: false,
-
-        message:
-          "Origin not allowed"
-
-      });
-
-    }
-
-
-    return res.status(500).json({
-
+  if (
+    err.message ===
+    "CORS origin not allowed"
+  ) {
+    return res.status(403).json({
       success: false,
-
-      message:
-        "Internal server error"
-
+      message: "Origin not allowed"
     });
-
   }
-);
 
+  return res.status(500).json({
+    success: false,
+    message: "Internal server error"
+  });
+});
 
 /* =========================================================
-   DATABASE CONNECTION CHECK
+   DATABASE STARTUP CHECK
 ========================================================= */
 
 db.query(
   "SELECT 1 AS connected",
-  (err) => {
-
+  err => {
     if (err) {
-
-      databaseStatus =
-        "disconnected";
-
+      databaseStatus = "disconnected";
       console.error("");
       startupLine();
-
-      console.error(
-        "❌ MYSQL CONNECTION FAILED"
-      );
-
-      console.error(
-        err.message
-      );
-
+      console.error("❌ MYSQL CONNECTION FAILED");
+      console.error(err.message);
       startupLine();
-
     } else {
-
-      databaseStatus =
-        "connected";
-
+      databaseStatus = "connected";
       console.log("");
       startupLine();
-
-      console.log(
-        "✅ MYSQL CONNECTED SUCCESSFULLY"
-      );
-
+      console.log("✅ MYSQL CONNECTED SUCCESSFULLY");
       startupLine();
-
     }
-
   }
 );
-
 
 /* =========================================================
    SERVER START
 ========================================================= */
 
-app.listen(
-  PORT,
-  () => {
-
-    console.log("");
-
-    startupLine();
-
-    console.log(
-      "🚀 CHARCOAL MARKETPLACE API"
-    );
-
-    startupLine();
-
-    console.log(
-      `✅ Server running on port ${PORT}`
-    );
-
-    console.log(
-      `🌐 Environment: ${
-        process.env.NODE_ENV ||
-        "development"
-      }`
-    );
-
-    console.log("");
-
-    console.log(
-      "🗄️ DATABASE"
-    );
-
-    console.log(
-      "--------------------------------------"
-    );
-
-    console.log(
-      `Database status: ${databaseStatus}`
-    );
-
-    console.log("");
-
-    console.log(
-      "🔐 AUTHENTICATION"
-    );
-
-    console.log(
-      "--------------------------------------"
-    );
-
-    console.log(
-      routeStatus.auth?.status === "loaded"
-        ? "✅ Auth routes ready"
-        : "❌ Auth routes FAILED"
-    );
-
-    console.log(
-      "✅ JWT authentication available"
-    );
-
-    console.log("");
-
-    console.log(
-      "💰 PI PAYMENT"
-    );
-
-    console.log(
-      "--------------------------------------"
-    );
-
-    console.log(
-      process.env.PI_API_KEY
-        ? "✅ PI_API_KEY configured"
-        : "⚠️ PI_API_KEY missing"
-    );
-
-    console.log("");
-
-    console.log(
-      "👑 SUPER ADMIN"
-    );
-
-    console.log(
-      "--------------------------------------"
-    );
-
-    console.log(
-      process.env.PI_SUPER_ADMIN_USERNAME
-        ? "✅ PI_SUPER_ADMIN_USERNAME configured"
-        : "⚠️ PI_SUPER_ADMIN_USERNAME missing"
-    );
-
-    console.log("");
-
-    console.log(
-      "🌐 CORS"
-    );
-
-    console.log(
-      "--------------------------------------"
-    );
-
-    if (configuredOrigins.length) {
-
-      console.log(
-        "✅ FRONTEND_ORIGINS configured"
-      );
-
-      console.log(
-        `   Allowed origins: ${
-          configuredOrigins.join(", ")
-        }`
-      );
-
-    } else {
-
-      console.warn(
-        "⚠️ FRONTEND_ORIGINS is not configured; CORS is OPEN."
-      );
-
-    }
-
-    console.log("");
-
-    console.log(
-      "🔍 DIAGNOSTIC ENDPOINTS"
-    );
-
-    console.log(
-      "--------------------------------------"
-    );
-
-    console.log(
-      "GET /api/health"
-    );
-
-    console.log(
-      "GET /api/health/routes"
-    );
-
-    console.log(
-      "GET /api/health/database"
-    );
-
-    console.log("");
-
-    startupLine();
-
-    console.log(
-      "🟢 SERVER STARTUP COMPLETE"
-    );
-
-    startupLine();
-
-    console.log("");
-
-  }
-);
+app.listen(PORT, () => {
+  console.log("");
+  startupLine();
+  console.log("🚀 CHARCOAL MARKETPLACE");
+  startupLine();
+  console.log(`✅ Server running on port ${PORT}`);
+  console.log(
+    `🌐 Environment: ${
+      process.env.NODE_ENV || "development"
+    }`
+  );
+  console.log("");
+  console.log(
+    `🗄️ Database status: ${databaseStatus}`
+  );
+  console.log("");
+  console.log(
+    routeStatus.auth?.status === "loaded"
+      ? "✅ Auth routes ready"
+      : "❌ Auth routes FAILED"
+  );
+  console.log(
+    process.env.PI_API_KEY
+      ? "✅ PI_API_KEY configured"
+      : "⚠️ PI_API_KEY missing"
+  );
+  console.log(
+    process.env.PI_SUPER_ADMIN_USERNAME
+      ? "✅ PI_SUPER_ADMIN_USERNAME configured"
+      : "⚠️ PI_SUPER_ADMIN_USERNAME missing"
+  );
+  console.log("");
+  startupLine();
+  console.log("🟢 SERVER STARTUP COMPLETE");
+  startupLine();
+  console.log("");
+});

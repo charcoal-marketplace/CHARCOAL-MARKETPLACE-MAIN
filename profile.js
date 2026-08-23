@@ -298,47 +298,78 @@ async function loginWithPi() {
 
     /* =========================
        INITIALIZE PI SDK
-       SANDBOX / PI DEV
+
+       sandbox=true is ONLY used for the
+       Pi Sandbox environment. A normal
+       Pi Testnet/Developer Portal app
+       must not force sandbox mode.
     ========================= */
 
-    await Pi.init({
-      version: "2.0",
-      sandbox: true
-    });
+    const piSandbox =
+      location.hostname === "sandbox.minepi.com" ||
+      localStorage.getItem("PI_SANDBOX") === "true";
 
+    const initOptions = {
+      version: "2.0"
+    };
 
-    console.log(
-      "✅ Pi SDK initialized in Sandbox"
-    );
-
-
-    if (msg) {
-
-      msg.textContent =
-        "Connecting to Pi...";
-
+    if (piSandbox) {
+      initOptions.sandbox = true;
     }
 
+    await Promise.race([
+      Pi.init(initOptions),
+      new Promise((_, reject) =>
+        setTimeout(
+          () => reject(
+            new Error(
+              "Pi SDK initialization timed out. Please reopen the app in Pi Browser."
+            )
+          ),
+          15000
+        )
+      )
+    ]);
+
+    console.log(
+      piSandbox
+        ? "✅ Pi SDK initialized in Sandbox"
+        : "✅ Pi SDK initialized"
+    );
+
+    if (msg) {
+      msg.textContent =
+        "Connecting to Pi...";
+    }
 
     /* =========================
        PI AUTHENTICATION
     ========================= */
 
     const auth =
-      await Pi.authenticate(
-        [
-          "username",
-          "payments"
-        ],
-        function (payment) {
-
-          console.log(
-            "Incomplete payment found:",
-            payment
-          );
-
-        }
-      );
+      await Promise.race([
+        Pi.authenticate(
+          [
+            "username"
+          ],
+          function (payment) {
+            console.log(
+              "Incomplete payment found:",
+              payment
+            );
+          }
+        ),
+        new Promise((_, reject) =>
+          setTimeout(
+            () => reject(
+              new Error(
+                "Pi authentication timed out. Please make sure you are opening the app from Pi Browser and that this app URL is registered in the Pi Developer Portal."
+              )
+            ),
+            30000
+          )
+        )
+      ]);
 
 
     console.log(
@@ -671,11 +702,25 @@ function updateVendorStatus(user) {
     user.role === "buyer"
   ) {
 
-    vendorTitle.textContent =
-      "Become a Vendor";
+    if (user.vendor_status === "pending") {
+      vendorTitle.textContent =
+        "Vendor Application";
 
-    vendorDescription.textContent =
-      "Start selling charcoal on the marketplace";
+      vendorDescription.textContent =
+        "Your application is awaiting approval";
+    } else if (user.vendor_status === "rejected") {
+      vendorTitle.textContent =
+        "Become a Vendor";
+
+      vendorDescription.textContent =
+        "Your previous application was rejected. You can apply again.";
+    } else {
+      vendorTitle.textContent =
+        "Become a Vendor";
+
+      vendorDescription.textContent =
+        "Start selling charcoal on the marketplace";
+    }
 
     earningsMenu.classList.add(
       "hidden"
