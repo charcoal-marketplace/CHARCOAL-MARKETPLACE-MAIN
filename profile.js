@@ -231,6 +231,10 @@ function showLoggedIn() {
    PI LOGIN
 ========================================================= */
 
+/* =========================================================
+   PI LOGIN
+========================================================= */
+
 async function loginWithPi() {
 
   const msg =
@@ -267,7 +271,7 @@ async function loginWithPi() {
 
 
   /* =========================
-     DISABLE LOGIN BUTTON
+     DISABLE BUTTON
   ========================= */
 
   if (btn) {
@@ -282,7 +286,7 @@ async function loginWithPi() {
   if (msg) {
 
     msg.textContent =
-      "Connecting to Pi...";
+      "Initializing Pi...";
 
     msg.style.color =
       "#666";
@@ -293,12 +297,27 @@ async function loginWithPi() {
   try {
 
     /* =========================
-       INITIALIZE PI
+       INITIALIZE PI SDK
+       SANDBOX / PI DEV
     ========================= */
 
-    Pi.init({
-      version: "2.0"
+    await Pi.init({
+      version: "2.0",
+      sandbox: true
     });
+
+
+    console.log(
+      "✅ Pi SDK initialized in Sandbox"
+    );
+
+
+    if (msg) {
+
+      msg.textContent =
+        "Connecting to Pi...";
+
+    }
 
 
     /* =========================
@@ -306,11 +325,31 @@ async function loginWithPi() {
     ========================= */
 
     const auth =
-      await Pi.authenticate([
-        "username",
-        "payments"
-      ]);
+      await Pi.authenticate(
+        [
+          "username",
+          "payments"
+        ],
+        function (payment) {
 
+          console.log(
+            "Incomplete payment found:",
+            payment
+          );
+
+        }
+      );
+
+
+    console.log(
+      "✅ Pi authentication response:",
+      auth
+    );
+
+
+    /* =========================
+       CHECK AUTH RESPONSE
+    ========================= */
 
     if (
       !auth ||
@@ -319,7 +358,7 @@ async function loginWithPi() {
     ) {
 
       throw new Error(
-        "Pi authentication failed."
+        "Pi did not return a valid authentication response."
       );
 
     }
@@ -334,12 +373,12 @@ async function loginWithPi() {
 
 
     /* =========================
-       SEND LOGIN TO BACKEND
+       SEND TOKEN TO RAILWAY
     ========================= */
 
     const response =
       await fetch(
-        `${API_URL}/api/auth/pi-login`,
+        `${API_URL}/auth/pi-login`,
         {
           method: "POST",
 
@@ -351,13 +390,7 @@ async function loginWithPi() {
           body: JSON.stringify({
 
             accessToken:
-              auth.accessToken,
-
-            uid:
-              auth.user.uid,
-
-            username:
-              auth.user.username
+              auth.accessToken
 
           })
 
@@ -365,8 +398,18 @@ async function loginWithPi() {
       );
 
 
+    /* =========================
+       READ BACKEND RESPONSE
+    ========================= */
+
     const data =
       await response.json();
+
+
+    console.log(
+      "Backend login response:",
+      data
+    );
 
 
     /* =========================
@@ -375,19 +418,20 @@ async function loginWithPi() {
 
     if (
       !response.ok ||
+      !data.success ||
       !data.token
     ) {
 
       throw new Error(
         data.message ||
-        "Backend login failed."
+        "Backend Pi login failed."
       );
 
     }
 
 
     /* =========================
-       SAVE AUTH TOKEN
+       SAVE JWT
     ========================= */
 
     localStorage.setItem(
@@ -405,35 +449,6 @@ async function loginWithPi() {
       localStorage.setItem(
         "user",
         JSON.stringify(data.user)
-      );
-
-    } else {
-
-      /*
-        Fallback user information
-        from Pi authentication.
-      */
-
-      const piUser = {
-
-        uid:
-          auth.user.uid,
-
-        username:
-          auth.user.username,
-
-        name:
-          auth.user.username,
-
-        role:
-          "buyer"
-
-      };
-
-
-      localStorage.setItem(
-        "user",
-        JSON.stringify(piUser)
       );
 
     }
@@ -454,10 +469,14 @@ async function loginWithPi() {
     }
 
 
-    /*
-      Reload profile so the
-      logged-in interface appears.
-    */
+    console.log(
+      "🎉 Pi login completed successfully"
+    );
+
+
+    /* =========================
+       RELOAD PROFILE
+    ========================= */
 
     setTimeout(() => {
 
@@ -469,7 +488,7 @@ async function loginWithPi() {
   } catch (error) {
 
     console.error(
-      "Pi login error:",
+      "❌ Pi login error:",
       error
     );
 
@@ -486,6 +505,7 @@ async function loginWithPi() {
     } else {
 
       alert(
+        error.message ||
         "Pi login failed. Please try again."
       );
 
@@ -504,7 +524,6 @@ async function loginWithPi() {
   }
 
 }
-
 
 /* =========================================================
    USER STATISTICS
