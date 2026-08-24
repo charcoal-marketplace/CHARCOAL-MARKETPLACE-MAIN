@@ -90,17 +90,11 @@ app.use(
 
 app.use(
   helmet({
-    crossOriginResourcePolicy: {
-      policy: "cross-origin"
-    },
-
-    /*
-     * External Pi SDK + Font Awesome are explicitly allowed.
-     * COEP/COOP are disabled because Pi SDK/browser integrations
-     * can depend on cross-origin resources.
-     */
     crossOriginEmbedderPolicy: false,
+
     crossOriginOpenerPolicy: false,
+
+    crossOriginResourcePolicy: false,
 
     contentSecurityPolicy: {
       directives: {
@@ -117,8 +111,7 @@ app.use(
 
         styleSrc: [
           "'self'",
-          "'unsafe-inline'",
-          "https://cdnjs.cloudflare.com"
+          "'unsafe-inline'"
         ],
 
         imgSrc: [
@@ -139,9 +132,13 @@ app.use(
           "data:"
         ],
 
-        objectSrc: ["'none'"],
+        objectSrc: [
+          "'none'"
+        ],
 
-        frameAncestors: ["'none'"]
+        frameAncestors: [
+          "'self'"
+        ]
       }
     }
   })
