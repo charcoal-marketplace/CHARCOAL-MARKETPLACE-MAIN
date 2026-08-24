@@ -1,643 +1,1163 @@
 const router = require("express").Router();
-const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const axios = require("axios");
 const db = require("../config/db");
 
-const SECRET = process.env.JWT_SECRET;
-if (!SECRET) throw new Error("JWT_SECRET is required");
 
-const PI_BASE_URL = "https://api.minepi.com/v2";
-const PI_SUPER_ADMIN_USERNAME = process.env.PI_SUPER_ADMIN_USERNAME;
+/* =========================================================
+   CONFIGURATION
+========================================================= */
+
+const SECRET = process.env.JWT_SECRET;
+
+if (!SECRET) {
+  throw new Error("JWT_SECRET is required");
+}
+
+
+const PI_BASE_URL =
+  "https://api.minepi.com/v2";
+
+
+const PI_SUPER_ADMIN_USERNAME =
+  process.env.PI_SUPER_ADMIN_USERNAME;
+
 
 if (!PI_SUPER_ADMIN_USERNAME) {
-  console.warn("⚠️ PI_SUPER_ADMIN_USERNAME is not configured.");
+
+  console.warn(
+    "⚠️ PI_SUPER_ADMIN_USERNAME is not configured."
+  );
+
 }
+
+
+/* =========================================================
+   CREATE JWT TOKEN
+========================================================= */
 
 function createToken(user) {
-  return jwt.sign({
-    id: user.id,
-    email: user.email,
-    role: user.role,
-    admin_level: user.admin_level || "none",
-    pi_uid: user.pi_uid || null
-  }, SECRET, { expiresIn: "1d" });
+
+  return jwt.sign(
+
+    {
+      id: user.id,
+
+      email: user.email,
+
+      role: user.role,
+
+      admin_level:
+        user.admin_level || "none",
+
+      pi_uid:
+        user.pi_uid || null
+    },
+
+    SECRET,
+
+    {
+      expiresIn: "1d"
+    }
+
+  );
+
 }
+
+
+/* =========================================================
+   PUBLIC USER DATA
+========================================================= */
 
 function publicUser(user) {
+
   return {
+
     id: user.id,
+
     name: user.name,
+
     email: user.email,
+
     role: user.role,
+
     status: user.status,
-    pi_uid: user.pi_uid || null,
-    pi_username: user.pi_username || null,
-    admin_level: user.admin_level || "none",
-    vendor_status: user.vendor_status || "none",
-    business_name: user.business_name || null,
-    business_phone: user.business_phone || null,
-    business_location: user.business_location || null,
-    business_description: user.business_description || null
+
+    pi_uid:
+      user.pi_uid || null,
+
+    pi_username:
+      user.pi_username || null,
+
+    admin_level:
+      user.admin_level || "none",
+
+    vendor_status:
+      user.vendor_status || "none",
+
+    business_name:
+      user.business_name || null,
+
+    business_phone:
+      user.business_phone || null,
+
+    business_location:
+      user.business_location || null,
+
+    business_description:
+      user.business_description || null
+
   };
+
 }
+
+
+/* =========================================================
+   VERIFY PI ACCOUNT
+========================================================= */
 
 async function verifyPiAccount(accessToken) {
-  if (!accessToken) throw new Error("Missing Pi access token");
 
-  const response = await axios.get(`${PI_BASE_URL}/me`, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-    timeout: 10000
-  });
+  if (!accessToken) {
+
+    throw new Error(
+      "Missing Pi access token"
+    );
+
+  }
+
+
+  const response =
+    await axios.get(
+      `${PI_BASE_URL}/me`,
+      {
+
+        headers: {
+
+          Authorization:
+            `Bearer ${accessToken}`
+
+        },
+
+        timeout: 10000
+
+      }
+    );
+
 
   if (!response.data?.uid) {
-    throw new Error("Invalid Pi account");
+
+    throw new Error(
+      "Invalid Pi account"
+    );
+
   }
+
 
   return response.data;
+
 }
 
-/* Legacy email/vendor registration. */
-router.post("/register", async (req, res) => {
-  const { name, email, password } = req.body || {};
 
-  if (!name || !email || !password) {
-    return res.status(400).json({
-      success: false,
-      message: "All fields required"
-    });
-  }
+/* =========================================================
+   PI-FIRST VENDOR APPLICATION
+========================================================= */
 
-  db.query(
-    "SELECT id FROM users WHERE email=? LIMIT 1",
-    [email],
-    async (err, rows) => {
-      if (err) {
-        console.error("Register lookup:", err);
-        return res.status(500).json({
-          success: false,
-          message: "Database error"
-        });
-      }
+router.post(
+  "/vendor-register",
+  async (req, res) => {
 
-      if (rows.length) {
-        return res.status(409).json({
-          success: false,
-          message: "Email already exists"
-        });
-      }
+    const {
 
-      try {
-        const passwordHash = await bcrypt.hash(password, 10);
+      accessToken,
 
-        db.query(
-          `INSERT INTO users
-           (name,email,password_hash,role,status,admin_level,vendor_status)
-           VALUES (?,?,?,?,?,?,?)`,
-          [
-            name.trim(),
-            email.trim().toLowerCase(),
-            passwordHash,
-            "vendor",
-            "pending",
-            "none",
-            "pending"
-          ],
-          err2 => {
-            if (err2) {
-              console.error("Register insert:", err2);
-              return res.status(500).json({
-                success: false,
-                message: "Register failed"
-              });
-            }
+      name,
 
-            res.status(201).json({
-              success: true,
-              message: "Vendor submitted for approval"
-            });
-          }
-        );
-      } catch (error) {
-        console.error("Password hashing:", error);
-        res.status(500).json({
-          success: false,
-          message: "Encryption error"
-        });
-      }
-    }
-  );
-});
+      business_name,
 
-/* Pi-first vendor application. */
-router.post("/vendor-register", async (req, res) => {
-  const {
-    accessToken,
-    name,
-    business_name,
-    business_phone,
-    business_location,
-    business_description
-  } = req.body || {};
+      business_phone,
 
-  if (!accessToken || !name || !business_name || !business_location) {
-    return res.status(400).json({
-      success: false,
-      message:
-        "Pi authentication, name, business name and business location are required"
-    });
-  }
+      business_location,
 
-  try {
-    const piUser = await verifyPiAccount(accessToken);
-    const uid = piUser.uid;
-    const username = piUser.username || "Pi User";
-    const email = `${uid}@pi.app`;
+      business_description
 
-    db.query(
-      "SELECT * FROM users WHERE pi_uid=? LIMIT 1",
-      [uid],
-      (err, rows) => {
-        if (err) {
-          console.error("Vendor lookup:", err);
-          return res.status(500).json({
-            success: false,
-            message: "Database error"
-          });
-        }
+    } = req.body || {};
 
-        if (!rows.length) {
-          const passwordHash = bcrypt.hashSync("PI_USER_INTERNAL", 10);
 
-          return db.query(
-            `INSERT INTO users
-             (name,email,password_hash,role,status,pi_uid,pi_username,
-              admin_level,vendor_status,business_name,business_phone,
-              business_location,business_description,vendor_applied_at)
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`,
-            [
-              name.trim(),
-              email,
-              passwordHash,
-              "buyer",
-              "approved",
-              uid,
-              username,
-              "none",
-              "pending",
-              business_name.trim(),
-              business_phone?.trim() || null,
-              business_location.trim(),
-              business_description?.trim() || null
-            ],
-            (e, result) => {
-              if (e) {
-                console.error("Vendor insert:", e);
-                return res.status(500).json({
-                  success: false,
-                  message: "Failed to submit vendor application"
-                });
-              }
+    /* =====================================================
+       VALIDATION
+    ===================================================== */
 
-              res.status(201).json({
-                success: true,
-                message:
-                  "Vendor application submitted. Wait for Admin approval.",
-                vendor_status: "pending",
-                user_id: result.insertId
-              });
-            }
-          );
-        }
+    if (
+      !accessToken ||
+      !name ||
+      !business_name ||
+      !business_location
+    ) {
 
-        const user = rows[0];
+      return res.status(400).json({
 
-        if (user.role === "admin") {
-          return res.status(403).json({
-            success: false,
-            message: "Administrator accounts cannot register as vendors"
-          });
-        }
+        success: false,
 
-        if (user.role === "vendor" && user.vendor_status === "approved") {
-          return res.status(409).json({
-            success: false,
-            message:
-              "This Pi account is already an approved vendor"
-          });
-        }
+        message:
+          "Pi authentication, name, business name and business location are required"
 
-        if (user.vendor_status === "pending") {
-          return res.status(409).json({
-            success: false,
-            message:
-              "Vendor application is already pending"
-          });
-        }
-
-        db.query(
-          `UPDATE users SET
-            vendor_status='pending',
-            business_name=?,
-            business_phone=?,
-            business_location=?,
-            business_description=?,
-            vendor_applied_at=CURRENT_TIMESTAMP,
-            vendor_reviewed_at=NULL,
-            vendor_reviewed_by=NULL,
-            vendor_rejection_reason=NULL
-           WHERE id=?`,
-          [
-            business_name.trim(),
-            business_phone?.trim() || null,
-            business_location.trim(),
-            business_description?.trim() || null,
-            user.id
-          ],
-          e => {
-            if (e) {
-              console.error("Vendor update:", e);
-              return res.status(500).json({
-                success: false,
-                message: "Failed to submit vendor application"
-              });
-            }
-
-            res.json({
-              success: true,
-              message:
-                "Vendor application submitted. Wait for Admin approval.",
-              vendor_status: "pending"
-            });
-          }
-        );
-      }
-    );
-  } catch (error) {
-    console.error(
-      "Vendor Pi registration:",
-      error.response?.data || error.message
-    );
-
-    res.status(401).json({
-      success: false,
-      message: "Pi authentication failed"
-    });
-  }
-});
-
-/* Email/password login. */
-router.post("/login", (req, res) => {
-  const { email, password } = req.body || {};
-
-  if (!email || !password) {
-    return res.status(400).json({
-      success: false,
-      message: "Missing fields"
-    });
-  }
-
-  db.query(
-    "SELECT * FROM users WHERE email=? LIMIT 1",
-    [email.trim().toLowerCase()],
-    async (err, rows) => {
-      if (err) {
-        console.error("Email login:", err);
-        return res.status(500).json({
-          success: false,
-          message: "Database error"
-        });
-      }
-
-      if (!rows.length) {
-        return res.status(401).json({
-          success: false,
-          message: "User not found"
-        });
-      }
-
-      const user = rows[0];
-
-      if (user.status !== "approved") {
-        return res.status(403).json({
-          success: false,
-          message: "Account not approved"
-        });
-      }
-
-      const valid = await bcrypt.compare(
-        password,
-        user.password_hash || ""
-      );
-
-      if (!valid) {
-        return res.status(401).json({
-          success: false,
-          message: "Wrong password"
-        });
-      }
-
-      res.json({
-        success: true,
-        token: createToken(user),
-        user: publicUser(user)
       });
+
     }
-  );
-});
 
-/* Pi user login. */
-router.post("/pi-login", async (req, res) => {
-  try {
-    const piUser = await verifyPiAccount(req.body?.accessToken);
-    const uid = piUser.uid;
-    const username = piUser.username || "Pi User";
-    const email = `${uid}@pi.app`;
 
-    db.query(
-      "SELECT * FROM users WHERE pi_uid=? LIMIT 1",
-      [uid],
-      (err, rows) => {
-        if (err) {
-          console.error("Pi login lookup:", err);
-          return res.status(500).json({
-            success: false,
-            message: "Database error"
-          });
-        }
+    try {
 
-        if (rows.length) {
-          const user = rows[0];
+      /* ===================================================
+         VERIFY PI ACCOUNT
+      =================================================== */
 
-          if (user.status !== "approved") {
-            return res.status(403).json({
+      const piUser =
+        await verifyPiAccount(
+          accessToken
+        );
+
+
+      const uid =
+        piUser.uid;
+
+
+      const username =
+        piUser.username ||
+        "Pi User";
+
+
+      const email =
+        `${uid}@pi.app`;
+
+
+      /* ===================================================
+         FIND EXISTING PI USER
+      =================================================== */
+
+      db.query(
+
+        "SELECT * FROM users WHERE pi_uid=? LIMIT 1",
+
+        [uid],
+
+        (err, rows) => {
+
+          if (err) {
+
+            console.error(
+              "Vendor lookup:",
+              err
+            );
+
+            return res.status(500).json({
+
               success: false,
+
               message:
-                user.vendor_status === "pending"
-                  ? "Your vendor application is awaiting Admin approval."
-                  : "Account is not approved"
+                "Database error"
+
             });
+
           }
 
-          return res.json({
-            success: true,
-            token: createToken(user),
-            user: publicUser(user)
-          });
-        }
 
-        const passwordHash =
-          bcrypt.hashSync("PI_USER_INTERNAL", 10);
+          /* ===============================================
+             NEW PI USER
+          =============================================== */
 
-        db.query(
-          `INSERT INTO users
-           (name,email,password_hash,role,status,pi_uid,pi_username,admin_level,vendor_status)
-           VALUES (?,?,?,?,?,?,?,?,?)`,
-          [
-            username,
-            email,
-            passwordHash,
-            "buyer",
-            "approved",
-            uid,
-            username,
-            "none",
-            "none"
-          ],
-          (e, r) => {
-            if (e) {
-              console.error("Pi user insert:", e);
-              return res.status(500).json({
-                success: false,
-                message: "Failed to create Pi user"
-              });
-            }
+          if (!rows.length) {
 
-            db.query(
-              "SELECT * FROM users WHERE id=? LIMIT 1",
-              [r.insertId],
-              (e2, rows2) => {
-                if (e2 || !rows2.length) {
+            return db.query(
+
+              `INSERT INTO users
+               (
+                 name,
+                 email,
+                 role,
+                 status,
+                 pi_uid,
+                 pi_username,
+                 admin_level,
+                 vendor_status,
+                 business_name,
+                 business_phone,
+                 business_location,
+                 business_description,
+                 vendor_applied_at
+               )
+               VALUES
+               (
+                 ?,
+                 ?,
+                 ?,
+                 ?,
+                 ?,
+                 ?,
+                 ?,
+                 ?,
+                 ?,
+                 ?,
+                 ?,
+                 ?,
+                 CURRENT_TIMESTAMP
+               )`,
+
+              [
+
+                name.trim(),
+
+                email,
+
+                "buyer",
+
+                "approved",
+
+                uid,
+
+                username,
+
+                "none",
+
+                "pending",
+
+                business_name.trim(),
+
+                business_phone?.trim() ||
+                  null,
+
+                business_location.trim(),
+
+                business_description?.trim() ||
+                  null
+
+              ],
+
+              (e, result) => {
+
+                if (e) {
+
+                  console.error(
+                    "Vendor insert:",
+                    e
+                  );
+
                   return res.status(500).json({
+
                     success: false,
-                    message: "User fetch failed"
+
+                    message:
+                      "Failed to submit vendor application"
+
                   });
+
                 }
 
-                res.json({
+
+                return res.status(201).json({
+
                   success: true,
-                  token: createToken(rows2[0]),
-                  user: publicUser(rows2[0])
+
+                  message:
+                    "Vendor application submitted. Wait for Admin approval.",
+
+                  vendor_status:
+                    "pending",
+
+                  user_id:
+                    result.insertId
+
                 });
+
               }
+
             );
+
           }
-        );
-      }
-    );
-  } catch (error) {
-    console.error(
-      "Pi login:",
-      error.response?.data || error.message
-    );
 
-    res.status(401).json({
-      success: false,
-      message: "Pi authentication failed"
-    });
-  }
-});
 
-/* Pi administrator login. */
-router.post("/pi-admin-login", async (req, res) => {
-  try {
-    const piUser = await verifyPiAccount(req.body?.accessToken);
-    const uid = piUser.uid;
-    const username = piUser.username || "Pi User";
+          /* ===============================================
+             EXISTING PI USER
+          =============================================== */
 
-    db.query(
-      "SELECT * FROM users WHERE pi_uid=? LIMIT 1",
-      [uid],
-      (err, rows) => {
-        if (err) {
-          console.error("Pi admin lookup:", err);
-          return res.status(500).json({
-            success: false,
-            message: "Database error"
-          });
-        }
+          const user =
+            rows[0];
 
-        if (rows.length) {
-          const user = rows[0];
 
-          if (user.status !== "approved") {
-            return res.status(403).json({
-              success: false,
-              message:
-                "Administrator account is not approved"
-            });
-          }
+          /* ===============================================
+             ADMIN CANNOT BECOME VENDOR
+          =============================================== */
 
           if (
-            user.role !== "admin" ||
-            !["super_admin", "admin", "moderator"]
-              .includes(user.admin_level)
+            user.role === "admin"
           ) {
+
             return res.status(403).json({
+
               success: false,
+
               message:
-                "This Pi account is not authorized for the Admin Panel"
+                "Administrator accounts cannot register as vendors"
+
             });
+
           }
 
-          return res.json({
-            success: true,
-            message:
-              user.admin_level === "super_admin"
-                ? "Super Admin login successful"
-                : "Administrator login successful",
-            token: createToken(user),
-            user: publicUser(user)
-          });
-        }
 
-        if (
-          !PI_SUPER_ADMIN_USERNAME ||
-          username !== PI_SUPER_ADMIN_USERNAME
-        ) {
-          return res.status(403).json({
-            success: false,
-            message:
-              "This Pi account is not an authorized administrator"
-          });
-        }
+          /* ===============================================
+             ALREADY APPROVED VENDOR
+          =============================================== */
 
-        const email = `${uid}@pi.app`;
-        const passwordHash =
-          bcrypt.hashSync("PI_ADMIN_INTERNAL", 10);
+          if (
+            user.role === "vendor" &&
+            user.vendor_status === "approved"
+          ) {
 
-        db.query(
-          `INSERT INTO users
-           (name,email,password_hash,role,status,pi_uid,pi_username,admin_level,vendor_status)
-           VALUES (?,?,?,?,?,?,?,?,?)`,
-          [
-            username,
-            email,
-            passwordHash,
-            "admin",
-            "approved",
-            uid,
-            username,
-            "super_admin",
-            "none"
-          ],
-          (e, r) => {
-            if (e) {
-              console.error("Super Admin insert:", e);
-              return res.status(500).json({
-                success: false,
-                message: "Failed to create Super Admin"
+            return res.status(409).json({
+
+              success: false,
+
+              message:
+                "This Pi account is already an approved vendor"
+
+            });
+
+          }
+
+
+          /* ===============================================
+             APPLICATION ALREADY PENDING
+          =============================================== */
+
+          if (
+            user.vendor_status === "pending"
+          ) {
+
+            return res.status(409).json({
+
+              success: false,
+
+              message:
+                "Vendor application is already pending"
+
+            });
+
+          }
+
+
+          /* ===============================================
+             RE-SUBMIT VENDOR APPLICATION
+          =============================================== */
+
+          db.query(
+
+            `UPDATE users SET
+
+              vendor_status='pending',
+
+              business_name=?,
+
+              business_phone=?,
+
+              business_location=?,
+
+              business_description=?,
+
+              vendor_applied_at=CURRENT_TIMESTAMP,
+
+              vendor_reviewed_at=NULL,
+
+              vendor_reviewed_by=NULL,
+
+              vendor_rejection_reason=NULL
+
+             WHERE id=?`,
+
+            [
+
+              business_name.trim(),
+
+              business_phone?.trim() ||
+                null,
+
+              business_location.trim(),
+
+              business_description?.trim() ||
+                null,
+
+              user.id
+
+            ],
+
+            e => {
+
+              if (e) {
+
+                console.error(
+                  "Vendor update:",
+                  e
+                );
+
+                return res.status(500).json({
+
+                  success: false,
+
+                  message:
+                    "Failed to submit vendor application"
+
+                });
+
+              }
+
+
+              return res.json({
+
+                success: true,
+
+                message:
+                  "Vendor application submitted. Wait for Admin approval.",
+
+                vendor_status:
+                  "pending"
+
               });
+
             }
 
-            db.query(
-              "SELECT * FROM users WHERE id=? LIMIT 1",
-              [r.insertId],
-              (e2, rows2) => {
-                if (e2 || !rows2.length) {
-                  return res.status(500).json({
-                    success: false,
-                    message: "Super Admin fetch failed"
-                  });
-                }
+          );
 
-                res.json({
-                  success: true,
-                  message: "Super Admin created successfully",
-                  token: createToken(rows2[0]),
-                  user: publicUser(rows2[0])
-                });
-              }
-            );
-          }
-        );
-      }
-    );
-  } catch (error) {
-    console.error(
-      "Pi admin verification:",
-      error.response?.data || error.message
-    );
+        }
 
-    res.status(401).json({
-      success: false,
-      message: "Pi account verification failed"
-    });
-  }
-});
-
-/* Email/password admin login. */
-router.post("/admin-login", (req, res) => {
-  const { email, password } = req.body || {};
-
-  if (!email || !password) {
-    return res.status(400).json({
-      success: false,
-      message: "Email and password are required"
-    });
-  }
-
-  db.query(
-    `SELECT * FROM users
-     WHERE email=?
-       AND role='admin'
-       AND admin_level IN ('super_admin','admin','moderator')
-     LIMIT 1`,
-    [email.trim().toLowerCase()],
-    async (err, rows) => {
-      if (err) {
-        console.error("Admin email login:", err);
-        return res.status(500).json({
-          success: false,
-          message: "Database error"
-        });
-      }
-
-      if (!rows.length) {
-        return res.status(401).json({
-          success: false,
-          message: "Administrator account not found"
-        });
-      }
-
-      const user = rows[0];
-
-      if (user.status !== "approved") {
-        return res.status(403).json({
-          success: false,
-          message: "Administrator account is not approved"
-        });
-      }
-
-      const valid = await bcrypt.compare(
-        password,
-        user.password_hash || ""
       );
 
-      if (!valid) {
-        return res.status(401).json({
-          success: false,
-          message: "Wrong password"
-        });
-      }
+    } catch (error) {
 
-      res.json({
-        success: true,
-        token: createToken(user),
-        user: publicUser(user)
+      console.error(
+
+        "Vendor Pi registration:",
+
+        error.response?.data ||
+        error.message
+
+      );
+
+
+      return res.status(401).json({
+
+        success: false,
+
+        message:
+          "Pi authentication failed"
+
       });
+
     }
-  );
-});
+
+  }
+
+);
+
+
+/* =========================================================
+   PI USER LOGIN
+========================================================= */
+
+router.post(
+  "/pi-login",
+  async (req, res) => {
+
+    try {
+
+      /* ===================================================
+         VERIFY PI ACCOUNT
+      =================================================== */
+
+      const piUser =
+        await verifyPiAccount(
+          req.body?.accessToken
+        );
+
+
+      const uid =
+        piUser.uid;
+
+
+      const username =
+        piUser.username ||
+        "Pi User";
+
+
+      const email =
+        `${uid}@pi.app`;
+
+
+      /* ===================================================
+         FIND PI USER
+      =================================================== */
+
+      db.query(
+
+        "SELECT * FROM users WHERE pi_uid=? LIMIT 1",
+
+        [uid],
+
+        (err, rows) => {
+
+          if (err) {
+
+            console.error(
+              "Pi login lookup:",
+              err
+            );
+
+            return res.status(500).json({
+
+              success: false,
+
+              message:
+                "Database error"
+
+            });
+
+          }
+
+
+          /* ===============================================
+             EXISTING PI USER
+          =============================================== */
+
+          if (rows.length) {
+
+            const user =
+              rows[0];
+
+
+            /* =============================================
+               CHECK ACCOUNT STATUS
+            ============================================= */
+
+            if (
+              user.status !== "approved"
+            ) {
+
+              return res.status(403).json({
+
+                success: false,
+
+                message:
+                  user.vendor_status ===
+                  "pending"
+
+                    ? "Your vendor application is awaiting Admin approval."
+
+                    : "Account is not approved"
+
+              });
+
+            }
+
+
+            /* =============================================
+               SUCCESSFUL PI LOGIN
+            ============================================= */
+
+            return res.json({
+
+              success: true,
+
+              token:
+                createToken(user),
+
+              user:
+                publicUser(user)
+
+            });
+
+          }
+
+
+          /* ===============================================
+             CREATE NEW PI USER
+          =============================================== */
+
+          db.query(
+
+            `INSERT INTO users
+             (
+               name,
+               email,
+               role,
+               status,
+               pi_uid,
+               pi_username,
+               admin_level,
+               vendor_status
+             )
+             VALUES
+             (
+               ?,
+               ?,
+               ?,
+               ?,
+               ?,
+               ?,
+               ?,
+               ?
+             )`,
+
+            [
+
+              username,
+
+              email,
+
+              "buyer",
+
+              "approved",
+
+              uid,
+
+              username,
+
+              "none",
+
+              "none"
+
+            ],
+
+            (e, r) => {
+
+              if (e) {
+
+                console.error(
+                  "Pi user insert:",
+                  e
+                );
+
+                return res.status(500).json({
+
+                  success: false,
+
+                  message:
+                    "Failed to create Pi user"
+
+                });
+
+              }
+
+
+              /* =========================================
+                 FETCH CREATED USER
+              ========================================= */
+
+              db.query(
+
+                "SELECT * FROM users WHERE id=? LIMIT 1",
+
+                [r.insertId],
+
+                (e2, rows2) => {
+
+                  if (
+                    e2 ||
+                    !rows2.length
+                  ) {
+
+                    return res.status(500).json({
+
+                      success: false,
+
+                      message:
+                        "User fetch failed"
+
+                    });
+
+                  }
+
+
+                  const user =
+                    rows2[0];
+
+
+                  return res.json({
+
+                    success: true,
+
+                    token:
+                      createToken(user),
+
+                    user:
+                      publicUser(user)
+
+                  });
+
+                }
+
+              );
+
+            }
+
+          );
+
+        }
+
+      );
+
+    } catch (error) {
+
+      console.error(
+
+        "Pi login:",
+
+        error.response?.data ||
+        error.message
+
+      );
+
+
+      return res.status(401).json({
+
+        success: false,
+
+        message:
+          "Pi authentication failed"
+
+      });
+
+    }
+
+  }
+
+);
+
+
+/* =========================================================
+   PI ADMINISTRATOR LOGIN
+========================================================= */
+
+router.post(
+  "/pi-admin-login",
+  async (req, res) => {
+
+    try {
+
+      /* ===================================================
+         VERIFY PI ACCOUNT
+      =================================================== */
+
+      const piUser =
+        await verifyPiAccount(
+          req.body?.accessToken
+        );
+
+
+      const uid =
+        piUser.uid;
+
+
+      const username =
+        piUser.username ||
+        "Pi User";
+
+
+      /* ===================================================
+         FIND EXISTING PI USER
+      =================================================== */
+
+      db.query(
+
+        "SELECT * FROM users WHERE pi_uid=? LIMIT 1",
+
+        [uid],
+
+        (err, rows) => {
+
+          if (err) {
+
+            console.error(
+              "Pi admin lookup:",
+              err
+            );
+
+            return res.status(500).json({
+
+              success: false,
+
+              message:
+                "Database error"
+
+            });
+
+          }
+
+
+          /* ===============================================
+             EXISTING ADMIN
+          =============================================== */
+
+          if (rows.length) {
+
+            const user =
+              rows[0];
+
+
+            if (
+              user.status !==
+              "approved"
+            ) {
+
+              return res.status(403).json({
+
+                success: false,
+
+                message:
+                  "Administrator account is not approved"
+
+              });
+
+            }
+
+
+            if (
+
+              user.role !==
+                "admin" ||
+
+              ![
+                "super_admin",
+                "admin",
+                "moderator"
+              ].includes(
+                user.admin_level
+              )
+
+            ) {
+
+              return res.status(403).json({
+
+                success: false,
+
+                message:
+                  "This Pi account is not authorized for the Admin Panel"
+
+              });
+
+            }
+
+
+            return res.json({
+
+              success: true,
+
+              message:
+                user.admin_level ===
+                "super_admin"
+
+                  ? "Super Admin login successful"
+
+                  : "Administrator login successful",
+
+              token:
+                createToken(user),
+
+              user:
+                publicUser(user)
+
+            });
+
+          }
+
+
+          /* ===============================================
+             FIRST SUPER ADMIN AUTHORIZATION
+          =============================================== */
+
+          if (
+
+            !PI_SUPER_ADMIN_USERNAME ||
+
+            username !==
+              PI_SUPER_ADMIN_USERNAME
+
+          ) {
+
+            return res.status(403).json({
+
+              success: false,
+
+              message:
+                "This Pi account is not an authorized administrator"
+
+            });
+
+          }
+
+
+          const email =
+            `${uid}@pi.app`;
+
+
+          /* ===============================================
+             CREATE SUPER ADMIN
+          =============================================== */
+
+          db.query(
+
+            `INSERT INTO users
+             (
+               name,
+               email,
+               role,
+               status,
+               pi_uid,
+               pi_username,
+               admin_level,
+               vendor_status
+             )
+             VALUES
+             (
+               ?,
+               ?,
+               ?,
+               ?,
+               ?,
+               ?,
+               ?,
+               ?
+             )`,
+
+            [
+
+              username,
+
+              email,
+
+              "admin",
+
+              "approved",
+
+              uid,
+
+              username,
+
+              "super_admin",
+
+              "none"
+
+            ],
+
+            (e, r) => {
+
+              if (e) {
+
+                console.error(
+                  "Super Admin insert:",
+                  e
+                );
+
+                return res.status(500).json({
+
+                  success: false,
+
+                  message:
+                    "Failed to create Super Admin"
+
+                });
+
+              }
+
+
+              /* =========================================
+                 FETCH SUPER ADMIN
+              ========================================= */
+
+              db.query(
+
+                "SELECT * FROM users WHERE id=? LIMIT 1",
+
+                [r.insertId],
+
+                (e2, rows2) => {
+
+                  if (
+                    e2 ||
+                    !rows2.length
+                  ) {
+
+                    return res.status(500).json({
+
+                      success: false,
+
+                      message:
+                        "Super Admin fetch failed"
+
+                    });
+
+                  }
+
+
+                  const user =
+                    rows2[0];
+
+
+                  return res.json({
+
+                    success: true,
+
+                    message:
+                      "Super Admin created successfully",
+
+                    token:
+                      createToken(user),
+
+                    user:
+                      publicUser(user)
+
+                  });
+
+                }
+
+              );
+
+            }
+
+          );
+
+        }
+
+      );
+
+    } catch (error) {
+
+      console.error(
+
+        "Pi admin verification:",
+
+        error.response?.data ||
+        error.message
+
+      );
+
+
+      return res.status(401).json({
+
+        success: false,
+
+        message:
+          "Pi account verification failed"
+
+      });
+
+    }
+
+  }
+
+);
+
+
+/* =========================================================
+   EXPORT ROUTER
+========================================================= */
 
 module.exports = router;
