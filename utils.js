@@ -1,4 +1,4 @@
-const API_BASE = "/api";
+const API_BASE = "https://charcoal-marketplace-main-production.up.railway.app/api";
 
 /* =========================
    SAFE API FETCH (PRODUCTION GRADE)

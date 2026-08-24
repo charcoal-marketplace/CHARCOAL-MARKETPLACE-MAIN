@@ -162,39 +162,60 @@ app.use(
 /* =========================================================
    SECURITY / PERFORMANCE
 ========================================================= */
-
-/* =========================================================
-   BASIC ROOT ENDPOINT
-========================================================= */
-
-app.get("/", (req, res) => {
-
-  res.json({
-
-    success: true,
-
-    status: "OK",
-
-    service: APP_NAME,
-
-    environment:
-      process.env.NODE_ENV || "development",
-
-    timestamp:
-      new Date().toISOString()
-
-  });
-
-});
-
-app.use(compression());
-
 app.use(
-  morgan(
-    process.env.NODE_ENV === "production"
-      ? "combined"
-      : "dev"
-  )
+  helmet({
+    crossOriginEmbedderPolicy: false,
+
+    crossOriginOpenerPolicy: false,
+
+    crossOriginResourcePolicy: false,
+
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+
+        scriptSrc: [
+          "'self'",
+          "https://sdk.minepi.com"
+        ],
+
+        scriptSrcAttr: [
+          "'unsafe-inline'"
+        ],
+
+        styleSrc: [
+          "'self'",
+          "'unsafe-inline'"
+        ],
+
+        imgSrc: [
+          "'self'",
+          "data:",
+          "blob:",
+          "https:"
+        ],
+
+        connectSrc: [
+          "'self'",
+          "https:"
+        ],
+
+        fontSrc: [
+          "'self'",
+          "https:",
+          "data:"
+        ],
+
+        objectSrc: [
+          "'none'"
+        ],
+
+        frameAncestors: [
+          "'self'"
+        ]
+      }
+    }
+  })
 );
 
 app.use(
@@ -236,12 +257,24 @@ app.use(
    BASIC ROOT ENDPOINT
 ========================================================= */
 
-app.use(express.static(__dirname));
-
 app.get("/", (req, res) => {
-  res.sendFile(
-    path.join(__dirname, "index.html")
-  );
+
+  res.json({
+
+    success: true,
+
+    status: "OK",
+
+    service: APP_NAME,
+
+    environment:
+      process.env.NODE_ENV || "development",
+
+    timestamp:
+      new Date().toISOString()
+
+  });
+
 });
 
 
