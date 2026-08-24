@@ -163,55 +163,29 @@ app.use(
    SECURITY / PERFORMANCE
 ========================================================= */
 
-app.use(
-  helmet({
-    crossOriginResourcePolicy: {
-      policy: "cross-origin"
-    },
+/* =========================================================
+   BASIC ROOT ENDPOINT
+========================================================= */
 
-    contentSecurityPolicy: {
-      directives: {
-        defaultSrc: ["'self'"],
+app.get("/", (req, res) => {
 
-        scriptSrc: [
-          "'self'",
-          "https://sdk.minepi.com"
-        ],
+  res.json({
 
-        scriptSrcAttr: [
-          "'unsafe-inline'"
-        ],
+    success: true,
 
-        styleSrc: [
-          "'self'",
-          "'unsafe-inline'"
-        ],
+    status: "OK",
 
-        imgSrc: [
-          "'self'",
-          "data:",
-          "blob:",
-          "https:"
-        ],
+    service: APP_NAME,
 
-        connectSrc: [
-          "'self'",
-          "https:"
-        ],
+    environment:
+      process.env.NODE_ENV || "development",
 
-        fontSrc: [
-          "'self'",
-          "https:",
-          "data:"
-        ],
+    timestamp:
+      new Date().toISOString()
 
-        objectSrc: ["'none'"],
+  });
 
-        frameAncestors: ["'none'"]
-      }
-    }
-  })
-);
+});
 
 app.use(compression());
 
