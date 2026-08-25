@@ -36,8 +36,22 @@ const upload = multer({
 
 function publicImage(pathValue) {
   if (!pathValue) return null;
-  if (/^https?:\/\//i.test(pathValue)) return pathValue;
-  return pathValue.startsWith("/") ? pathValue : `/${pathValue}`;
+
+  // If database already contains a complete URL,
+  // return it unchanged.
+  if (/^https?:\/\//i.test(pathValue)) {
+    return pathValue;
+  }
+
+  const backendUrl =
+    process.env.BACKEND_URL ||
+    "https://charcoal-marketplace-main-production.up.railway.app";
+
+  const cleanPath = pathValue.startsWith("/")
+    ? pathValue
+    : `/${pathValue}`;
+
+  return `${backendUrl}${cleanPath}`;
 }
 
 /* Vendor/admin product creation. */
