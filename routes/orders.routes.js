@@ -665,28 +665,513 @@ router.get("/", verifyToken(["admin"]), (req, res) => {
   );
 });
 
-/* Status updates. */
-router.put("/:id/status", verifyToken(), (req, res) => {
-  const orderId = Number(req.params.id);
-  const status = req.body?.status;
+/* =========================================================
+ORDER STATUS UPDATES
 
-  const allowed = [
-    "pending",
-    "paid",
-    "processing",
-    "shipped",
-    "completed",
-    "cancelled",
-    "rejected",
-    "refunded"
-  ];
+Vendor flow:
 
-  if (!Number.isInteger(orderId) || !allowed.includes(status)) {
+paid
+↓
+processing
+↓
+shipped
+↓
+completed
+↓
+buyer confirms receipt
+
+Admin can update order status when necessary.
+
+IMPORTANT:
+A vendor can only update an order if ALL order items
+belong to that vendor.
+
+This prevents one vendor in a multi-vendor checkout
+from changing the delivery status of another vendor's
+products.
+========================================================= */
+
+router.put(
+"/:id/status",
+verifyToken(),
+async (req, res) => {
+
+const orderId =
+  Number(req.params.id);
+
+const requestedStatus =
+  String(
+    req.body?.status || ""
+  ).toLowerCase();
+
+
+const allowedStatuses = [
+  "pending",
+  "paid",
+  "processing",
+  "shipped",
+  "completed",
+  "cancelled",
+  "rejected",
+  "refunded"
+];
+
+
+if (
+  !Number.isInteger(orderId) ||
+  !allowedStatuses.includes(requestedStatus)
+) {
+
+  return res.status(400).json({
+    success: false,
+    message: "Invalid order or status"
+  });
+
+}
+
+
+try {
+
+  /*
+   * Get the order itself.
+   */
+
+  const [orders] =
+    await db.promise().query(
+      `
+      SELECT
+        id,
+        user_id,
+        vendor_id,
+        status,
+        payment_status,
+        delivery_status,
+        buyer_confirmed_at
+      FROM orders
+      WHERE id=?
+      LIMIT 1
+      `,
+      [orderId]
+    );
+
+
+  if (!orders.length) {
+
+    return res.status(404).json({
+      success: false,
+      message: "Order not found"
+    });
+
+  }
+
+
+  const order =
+    orders[0];
+
+
+  /*
+   * Buyer is NOT allowed to change order status
+   * through this endpoint.
+   */
+
+  if (
+    req.user.role !== "admin" &&
+    req.user.role !== "vendor"
+  ) {
+
+    return res.status(403).json({
+      success: false,
+      message: "Not allowed"
+    });
+
+  }
+
+
+  /* =====================================================
+     ADMIN
+  ===================================================== */
+
+  if (
+    req.user.role === "admin"
+  ) {
+
+    await db.promise().query(
+      `
+      UPDATE orders
+      SET
+        status=?,
+
+        payment_status=
+          CASE
+            WHEN ?='paid'
+              THEN 'paid'
+            WHEN ?='cancelled'
+              THEN 'cancelled'
+            WHEN ?='refunded'
+              THEN 'refunded'
+            ELSE payment_status
+          END,
+
+        delivery_status=
+          CASE
+            WHEN ?='shipped'
+              THEN 'shipped'
+
+            WHEN ?='completed'
+              THEN 'delivered'
+
+            WHEN ?='cancelled'
+              THEN 'cancelled'
+
+            ELSE delivery_status
+          END,
+
+        paid_at=
+          CASE
+            WHEN ?='paid'
+              AND paid_at IS NULL
+              THEN CURRENT_TIMESTAMP
+            ELSE paid_at
+          END,
+
+        shipped_at=
+          CASE
+            WHEN ?='shipped'
+              AND shipped_at IS NULL
+              THEN CURRENT_TIMESTAMP
+            ELSE shipped_at
+          END,
+
+        completed_at=
+          CASE
+            WHEN ?='completed'
+              AND completed_at IS NULL
+              THEN CURRENT_TIMESTAMP
+            ELSE completed_at
+          END,
+
+        cancelled_at=
+          CASE
+            WHEN ?='cancelled'
+              AND cancelled_at IS NULL
+              THEN CURRENT_TIMESTAMP
+            ELSE cancelled_at
+          END,
+
+        refunded_at=
+          CASE
+            WHEN ?='refunded'
+              AND refunded_at IS NULL
+              THEN CURRENT_TIMESTAMP
+            ELSE refunded_at
+          END
+
+      WHERE id=?
+      `,
+      [
+        requestedStatus,
+
+        requestedStatus,
+        requestedStatus,
+        requestedStatus,
+        requestedStatus,
+
+        requestedStatus,
+        requestedStatus,
+        requestedStatus,
+
+        requestedStatus,
+        requestedStatus,
+        requestedStatus,
+        requestedStatus,
+        requestedStatus,
+
+        orderId
+      ]
+    );
+
+
+    return res.json({
+      success: true,
+      message:
+        "Order status updated successfully",
+      order_id:
+        orderId,
+      status:
+        requestedStatus
+    });
+
+  }
+
+
+  /* =====================================================
+     VENDOR
+  ===================================================== */
+
+  /*
+   * Vendor must actually own EVERY item in this order.
+   *
+   * This is important for multi-vendor checkout.
+   */
+
+  const [items] =
+    await db.promise().query(
+      `
+      SELECT
+        vendor_id
+      FROM order_items
+      WHERE order_id=?
+      `,
+      [orderId]
+    );
+
+
+  if (!items.length) {
+
     return res.status(400).json({
       success: false,
-      message: "Invalid order/status"
+      message: "Order contains no items"
     });
+
   }
+
+
+  const vendorOwnsEveryItem =
+    items.every(
+      item =>
+        Number(item.vendor_id) ===
+        Number(req.user.id)
+    );
+
+
+  if (!vendorOwnsEveryItem) {
+
+    return res.status(403).json({
+      success: false,
+      message:
+        "You cannot update this order because it contains products from another vendor"
+    });
+
+  }
+
+
+  /*
+   * Do not allow changes after buyer confirmation.
+   */
+
+  if (
+    order.buyer_confirmed_at
+  ) {
+
+    return res.status(409).json({
+      success: false,
+      message:
+        "Buyer has already confirmed receipt. This order can no longer be changed by the vendor."
+    });
+
+  }
+
+
+  const currentStatus =
+    String(
+      order.status || "pending"
+    ).toLowerCase();
+
+
+  /* =====================================================
+     VENDOR STATUS TRANSITIONS
+  ===================================================== */
+
+  const validTransition =
+    (
+      currentStatus === "paid" &&
+      requestedStatus === "processing"
+    ) ||
+
+    (
+      currentStatus === "processing" &&
+      requestedStatus === "shipped"
+    ) ||
+
+    (
+      currentStatus === "shipped" &&
+      requestedStatus === "completed"
+    );
+
+
+  /*
+   * Allow vendor to keep an already completed order
+   * unchanged, but do not allow arbitrary jumps.
+   */
+
+  if (
+    !validTransition
+  ) {
+
+    return res.status(409).json({
+      success: false,
+      message:
+        `Invalid status transition: ${currentStatus} → ${requestedStatus}`
+    });
+
+  }
+
+
+  /*
+   * Vendor cannot mark an order as completed unless
+   * it has first been shipped.
+   *
+   * completed automatically means delivered.
+   */
+
+  await db.promise().query(
+    `
+    UPDATE orders
+    SET
+      status=?,
+
+      delivery_status=
+        CASE
+          WHEN ?='shipped'
+            THEN 'shipped'
+
+          WHEN ?='completed'
+            THEN 'delivered'
+
+          ELSE delivery_status
+        END,
+
+      shipped_at=
+        CASE
+          WHEN ?='shipped'
+            THEN CURRENT_TIMESTAMP
+          ELSE shipped_at
+        END,
+
+      completed_at=
+        CASE
+          WHEN ?='completed'
+            THEN CURRENT_TIMESTAMP
+          ELSE completed_at
+        END
+
+    WHERE id=?
+    `,
+    [
+      requestedStatus,
+      requestedStatus,
+      requestedStatus,
+
+      requestedStatus,
+      requestedStatus,
+
+      orderId
+    ]
+  );
+
+
+  /*
+   * Notify buyer when the order is shipped.
+   */
+
+  if (
+    requestedStatus === "shipped"
+  ) {
+
+    await db.promise().query(
+      `
+      INSERT INTO notifications
+      (
+        user_id,
+        message,
+        type
+      )
+      VALUES (?, ?, ?)
+      `,
+      [
+        order.user_id,
+
+        `Your order #${orderId} has been shipped by the vendor.`,
+
+        "order"
+      ]
+    );
+
+  }
+
+
+  /*
+   * Notify buyer when the order is delivered.
+   */
+
+  if (
+    requestedStatus === "completed"
+  ) {
+
+    await db.promise().query(
+      `
+      INSERT INTO notifications
+      (
+        user_id,
+        message,
+        type
+      )
+      VALUES (?, ?, ?)
+      `,
+      [
+        order.user_id,
+
+        `Your order #${orderId} has been delivered. Please confirm that you received your product.`,
+
+        "order"
+      ]
+    );
+
+  }
+
+
+  return res.json({
+    success: true,
+
+    message:
+      requestedStatus === "processing"
+        ? "Order is now being processed."
+        : requestedStatus === "shipped"
+          ? "Order marked as shipped successfully."
+          : "Order marked as delivered successfully.",
+
+    order_id:
+      orderId,
+
+    status:
+      requestedStatus,
+
+    delivery_status:
+      requestedStatus === "shipped"
+        ? "shipped"
+        : requestedStatus === "completed"
+          ? "delivered"
+          : order.delivery_status
+  });
+
+
+} catch (error) {
+
+  console.error(
+    "Update order status:",
+    error
+  );
+
+  return res.status(500).json({
+    success: false,
+    message:
+      "Unable to update order status"
+  });
+
+}
+
+}
+);
 
   db.query(
     `SELECT o.*,oi.vendor_id
