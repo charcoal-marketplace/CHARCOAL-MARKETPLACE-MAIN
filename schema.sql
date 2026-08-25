@@ -1432,7 +1432,26 @@ COLLATE=utf8mb4_unicode_ci;
 /* =========================================================
    13. OPTIONAL INITIAL SUPER ADMIN
 ========================================================= */
+ALTER TABLE users
+ADD COLUMN pi_wallet_address VARCHAR(255) NULL AFTER pi_username;
 
+
+CREATE INDEX idx_users_pi_wallet_address
+ON users(pi_wallet_address);
+
+
+ALTER TABLE earnings
+ADD COLUMN payout_payment_id VARCHAR(255) NULL AFTER payment_id,
+ADD COLUMN payout_txid VARCHAR(255) NULL AFTER payout_payment_id,
+ADD COLUMN paid_at DATETIME NULL AFTER payout_txid,
+ADD COLUMN payout_error TEXT NULL AFTER paid_at;
+
+
+ALTER TABLE orders
+ADD COLUMN buyer_confirmed_at DATETIME NULL AFTER completed_at;
+
+CREATE INDEX idx_orders_buyer_confirmed
+ON orders (buyer_confirmed_at);
 /*=========================================================
    14. VERIFY DATABASE
 ========================================================= */
