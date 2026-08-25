@@ -321,6 +321,282 @@ router.get("/my", verifyToken(), (req, res) => {
   );
 });
 
+/* =========================================================
+   BUYER CONFIRM PRODUCT RECEIVED
+
+   POST /api/orders/:id/confirm-received
+
+   Only the buyer who owns the order can confirm receipt.
+
+   The order must already have been marked as delivered
+   by the vendor/admin.
+
+   This confirmation is what makes the vendor earning
+   eligible for Admin release.
+========================================================= */
+
+router.post(
+  "/:id/confirm-received",
+  verifyToken(),
+  async (req, res) => {
+
+    const orderId =
+      Number(req.params.id);
+
+    if (!Number.isInteger(orderId)) {
+
+      return res.status(400).json({
+        success: false,
+        message: "Invalid order ID"
+      });
+
+    }
+
+    const connection =
+      await db.promise().getConnection();
+
+    try {
+
+      await connection.beginTransaction();
+
+      /*
+       * Load the order belonging to the
+       * authenticated buyer.
+       */
+
+      const [orders] =
+        await connection.query(
+          `
+          SELECT
+            id,
+            user_id,
+            status,
+            payment_status,
+            delivery_status,
+            buyer_confirmed_at
+          FROM orders
+          WHERE id = ?
+          AND user_id = ?
+          LIMIT 1
+          FOR UPDATE
+          `,
+          [
+            orderId,
+            req.user.id
+          ]
+        );
+
+
+      /*
+       * Order must belong to this buyer.
+       */
+
+      if (!orders.length) {
+
+        await connection.rollback();
+
+        return res.status(404).json({
+          success: false,
+          message: "Order not found"
+        });
+
+      }
+
+
+      const order =
+        orders[0];
+
+
+      /*
+       * Do not allow confirmation twice.
+       */
+
+      if (order.buyer_confirmed_at) {
+
+        await connection.rollback();
+
+        return res.status(409).json({
+          success: false,
+          message:
+            "You have already confirmed receipt of this order",
+          confirmed_at:
+            order.buyer_confirmed_at
+        });
+
+      }
+
+
+      /*
+       * Payment must have been completed.
+       */
+
+      if (
+        order.payment_status !== "paid"
+      ) {
+
+        await connection.rollback();
+
+        return res.status(400).json({
+          success: false,
+          message:
+            "This order has not been paid successfully"
+        });
+
+      }
+
+
+      /*
+       * Product must have been delivered.
+       *
+       * We also accept status='completed' because
+       * your existing status system already maps
+       * completed orders to delivered.
+       */
+
+      if (
+        order.delivery_status !== "delivered" &&
+        order.status !== "completed"
+      ) {
+
+        await connection.rollback();
+
+        return res.status(400).json({
+          success: false,
+          message:
+            "You can only confirm an order after it has been delivered"
+        });
+
+      }
+
+
+      /*
+       * Record buyer confirmation.
+       */
+
+      const [result] =
+        await connection.query(
+          `
+          UPDATE orders
+          SET
+            buyer_confirmed_at = CURRENT_TIMESTAMP
+          WHERE id = ?
+          AND user_id = ?
+          AND buyer_confirmed_at IS NULL
+          `,
+          [
+            orderId,
+            req.user.id
+          ]
+        );
+
+
+      if (!result.affectedRows) {
+
+        await connection.rollback();
+
+        return res.status(409).json({
+          success: false,
+          message:
+            "Order has already been confirmed"
+        });
+
+      }
+
+
+      /*
+       * Notify the vendor(s) connected to this order.
+       *
+       * We use order_items instead of orders.vendor_id
+       * because one checkout can contain products from
+       * multiple vendors.
+       */
+
+      const [vendors] =
+        await connection.query(
+          `
+          SELECT DISTINCT
+            vendor_id
+          FROM order_items
+          WHERE order_id = ?
+          AND vendor_id IS NOT NULL
+          `,
+          [orderId]
+        );
+
+
+      for (const vendor of vendors) {
+
+        await connection.query(
+          `
+          INSERT INTO notifications
+          (
+            user_id,
+            message,
+            type
+          )
+          VALUES (?, ?, ?)
+          `,
+          [
+            vendor.vendor_id,
+            `Buyer has confirmed receipt of order #${orderId}. Your eligible earning can now be reviewed for release.`,
+            "earning"
+          ]
+        );
+
+      }
+
+
+      await connection.commit();
+
+
+      return res.json({
+
+        success: true,
+
+        message:
+          "Product receipt confirmed successfully",
+
+        order_id:
+          orderId,
+
+        buyer_confirmed_at:
+          new Date().toISOString(),
+
+        payout_status:
+          "awaiting_admin_release"
+
+      });
+
+
+    } catch (error) {
+
+      try {
+        await connection.rollback();
+      } catch {}
+
+      console.error(
+        "Confirm product received:",
+        error
+      );
+
+      return res.status(500).json({
+
+        success: false,
+
+        message:
+          "Failed to confirm product receipt"
+
+      });
+
+    } finally {
+
+      connection.release();
+
+    }
+
+  }
+);
+
 /* Vendor orders. */
 router.get("/vendor", verifyToken(["vendor"]), (req, res) => {
   db.query(

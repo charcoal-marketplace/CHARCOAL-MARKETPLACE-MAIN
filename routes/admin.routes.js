@@ -6,6 +6,15 @@ const {
   verifyAdmin
 } = require("../middleware/auth.middleware");
 
+const {
+  createA2UPayment,
+  approvePayment,
+  submitA2UPayment,
+  completePayment,
+  fetchPayment,
+  getIncompleteServerPayments
+} = require("../piService");
+
 
 /* =========================================================
    HELPER: CHECK SUPER ADMIN
@@ -2180,4 +2189,897 @@ router.post(
   }
 );
 
+/* =========================================================
+   VENDOR EARNINGS
+   GET /api/admin/earnings/pending
+
+   NORMAL ADMIN + SUPER ADMIN CAN VIEW
+========================================================= */
+
+router.get(
+  "/earnings/pending",
+  verifyAdmin,
+  async (req, res) => {
+
+    try {
+
+      const [earnings] =
+        await db.promise().query(
+          `
+          SELECT
+            e.id,
+            e.user_id,
+            e.order_id,
+            e.vendor_id,
+            e.type,
+            e.amount_pi,
+            e.status,
+            e.description,
+            e.payout_payment_id,
+            e.payout_txid,
+            e.paid_at,
+            e.payout_error,
+            e.created_at,
+
+            u.name AS vendor_name,
+            u.email AS vendor_email,
+            u.pi_uid,
+            u.pi_username,
+
+            p.business_name,
+            p.pi_wallet_address
+
+          FROM earnings e
+
+          LEFT JOIN users u
+            ON e.vendor_id = u.id
+
+          LEFT JOIN users p
+            ON e.vendor_id = p.id
+
+          WHERE e.type = 'sale'
+            AND e.status = 'pending'
+
+          ORDER BY e.created_at ASC
+          `
+        );
+
+
+      res.json({
+
+        success: true,
+
+        earnings:
+          earnings || []
+
+      });
+
+    } catch (error) {
+
+      console.error(
+        "Pending vendor earnings:",
+        error
+      );
+
+      res.status(500).json({
+
+        success: false,
+
+        message:
+          "Failed to load pending vendor earnings"
+
+      });
+
+    }
+
+  }
+);
+
+/* =========================================================
+   RELEASE VENDOR EARNING
+   POST /api/admin/earnings/:id/release
+
+   NORMAL ADMIN + SUPER ADMIN CAN RELEASE
+
+   MODERATOR CANNOT
+========================================================= */
+
+router.post(
+  "/earnings/:id/release",
+  verifyAdmin,
+  async (req, res) => {
+
+    const earningId =
+      Number(req.params.id);
+
+
+    if (!Number.isInteger(earningId)) {
+
+      return res.status(400).json({
+
+        success: false,
+
+        message:
+          "Invalid earning ID"
+
+      });
+
+    }
+
+
+    const connection =
+      await db.promise().getConnection();
+
+
+    let paymentId = null;
+    let txid = null;
+
+
+    try {
+
+      /*
+       * Make absolutely sure only actual
+       * administrators can release funds.
+       *
+       * Super Admin:
+       * allowed
+       *
+       * Normal Admin:
+       * allowed
+       *
+       * Moderator:
+       * denied
+       */
+
+      const [adminRows] =
+        await connection.query(
+          `
+          SELECT
+            id,
+            role,
+            status,
+            admin_level
+          FROM users
+          WHERE id = ?
+          LIMIT 1
+          FOR UPDATE
+          `,
+          [req.user.id]
+        );
+
+
+      if (!adminRows.length) {
+
+        await connection.rollback();
+
+        return res.status(401).json({
+
+          success: false,
+
+          message:
+            "Administrator account not found"
+
+        });
+
+      }
+
+
+      const admin =
+        adminRows[0];
+
+
+      if (
+        admin.role !== "admin" ||
+        admin.status !== "approved"
+      ) {
+
+        await connection.rollback();
+
+        return res.status(403).json({
+
+          success: false,
+
+          message:
+            "Administrator access denied"
+
+        });
+
+      }
+
+
+      if (
+        admin.admin_level !== "admin" &&
+        admin.admin_level !== "super_admin"
+      ) {
+
+        await connection.rollback();
+
+        return res.status(403).json({
+
+          success: false,
+
+          message:
+            "Only Admin or Super Admin can release vendor earnings"
+
+        });
+
+      }
+
+
+      /*
+       * Lock the earning row.
+       */
+
+      await connection.beginTransaction();
+
+
+      const [earningRows] =
+  await connection.query(
+    `
+    SELECT
+      e.*,
+
+      o.status AS order_status,
+      o.payment_status AS order_payment_status,
+      o.delivery_status AS order_delivery_status,
+      o.buyer_confirmed_at,
+
+      u.name AS vendor_name,
+      u.email AS vendor_email,
+      u.pi_uid,
+      u.pi_username,
+      u.role AS vendor_role,
+      u.status AS vendor_status,
+      u.vendor_status,
+      u.pi_wallet_address
+
+    FROM earnings e
+
+    INNER JOIN users u
+      ON e.vendor_id = u.id
+
+    LEFT JOIN orders o
+      ON e.order_id = o.id
+
+    WHERE e.id = ?
+
+    LIMIT 1
+
+    FOR UPDATE
+    `,
+    [earningId]
+  );
+
+
+      if (!earningRows.length) {
+
+        await connection.rollback();
+
+        return res.status(404).json({
+
+          success: false,
+
+          message:
+            "Vendor earning not found"
+
+        });
+
+      }
+
+
+      const earning =
+        earningRows[0];
+
+      /*
+ * =====================================================
+ * BUYER RECEIPT CONFIRMATION
+ * =====================================================
+ *
+ * Vendor earnings cannot be released until the
+ * buyer has confirmed that the product was received.
+ */
+
+if (!earning.buyer_confirmed_at) {
+
+  await connection.rollback();
+
+  return res.status(409).json({
+
+    success: false,
+
+    message:
+      "Vendor payout is locked until the buyer confirms receipt of the product.",
+
+    earning_id:
+      earning.id,
+
+    order_id:
+      earning.order_id,
+
+    payout_status:
+      "awaiting_buyer_confirmation"
+
+  });
+
+}
+      
+
+      /*
+       * Never pay something that is
+       * already marked as paid.
+       */
+
+      if (
+        earning.status === "paid"
+      ) {
+
+        await connection.rollback();
+
+        return res.status(409).json({
+
+          success: false,
+
+          message:
+            "This earning has already been paid",
+
+          payout_txid:
+            earning.payout_txid || null
+
+        });
+
+      }
+
+
+      /*
+       * Only sale earnings are released
+       * to vendors.
+       */
+
+      if (
+        earning.type !== "sale"
+      ) {
+
+        await connection.rollback();
+
+        return res.status(400).json({
+
+          success: false,
+
+          message:
+            "This earning is not a vendor sale earning"
+
+        });
+
+      }
+
+
+      /*
+       * Vendor must have an authenticated
+       * Pi UID.
+       */
+
+      if (
+        !earning.pi_uid
+      ) {
+
+        await connection.rollback();
+
+        return res.status(400).json({
+
+          success: false,
+
+          message:
+            "Vendor does not have a valid Pi UID"
+
+        });
+
+      }
+
+
+      /*
+       * Vendor must still be an approved vendor.
+       */
+
+      if (
+        earning.vendor_role !== "vendor" ||
+        earning.vendor_status !== "approved" ||
+        earning.vendor_status === "rejected"
+      ) {
+
+        await connection.rollback();
+
+        return res.status(400).json({
+
+          success: false,
+
+          message:
+            "Vendor is not approved to receive earnings"
+
+        });
+
+      }
+
+
+      const amount =
+        Number(earning.amount_pi);
+
+
+      if (
+        !Number.isFinite(amount) ||
+        amount <= 0
+      ) {
+
+        await connection.rollback();
+
+        return res.status(400).json({
+
+          success: false,
+
+          message:
+            "Invalid vendor earning amount"
+
+        });
+
+      }
+
+
+      /*
+       * Prevent a second payout if an
+       * earlier A2U payment already exists.
+       */
+
+      if (
+        earning.payout_payment_id
+      ) {
+
+        paymentId =
+          earning.payout_payment_id;
+
+      }
+
+
+      await connection.commit();
+
+
+      /*
+       * =====================================================
+       * A2U PAYMENT CREATION
+       * =====================================================
+       */
+
+      if (!paymentId) {
+
+        const payment =
+          await createA2UPayment({
+
+            uid:
+              earning.pi_uid,
+
+            amount,
+
+            memo:
+              `Vendor earnings payout #${earning.id}`,
+
+            metadata: {
+
+              type:
+                "vendor_earnings",
+
+              earning_id:
+                earning.id,
+
+              order_id:
+                earning.order_id,
+
+              vendor_id:
+                earning.vendor_id
+
+            }
+
+          });
+
+
+        paymentId =
+          payment.identifier;
+
+
+        /*
+         * Store payment ID immediately.
+         *
+         * This is critical for preventing
+         * accidental double payment.
+         */
+
+        await db.promise().query(
+          `
+          UPDATE earnings
+
+          SET
+            payout_payment_id = ?,
+            payout_error = NULL
+
+          WHERE id = ?
+            AND status = 'pending'
+          `,
+          [
+            paymentId,
+            earning.id
+          ]
+        );
+
+      }
+
+
+      /*
+ * =====================================================
+ * APPROVE A2U PAYMENT
+ * =====================================================
+ */
+
+const currentPayment =
+  await fetchPayment(
+    paymentId
+  );
+
+
+if (!currentPayment) {
+
+  throw new Error(
+    "Unable to retrieve A2U payment before approval"
+  );
+
+}
+
+
+/*
+ * Do not approve again if Pi
+ * already shows developer approval.
+ */
+
+if (
+  currentPayment.status &&
+  currentPayment.status.developer_approved !== true
+) {
+
+  await approvePayment(
+    paymentId
+  );
+
+}
+      
+      /*
+       * =====================================================
+       * SUBMIT TO PI BLOCKCHAIN
+       * =====================================================
+       */
+
+      const submission =
+        await submitA2UPayment(
+          paymentId
+        );
+
+
+      txid =
+        submission.txid;
+
+
+      /*
+       * Store TXID immediately.
+       */
+
+      await db.promise().query(
+        `
+        UPDATE earnings
+
+        SET
+          payout_txid = ?,
+          payout_error = NULL
+
+        WHERE id = ?
+        `,
+        [
+          txid,
+          earning.id
+        ]
+      );
+
+
+      /*
+       * =====================================================
+       * COMPLETE PAYMENT WITH PI
+       * =====================================================
+       */
+
+      const completedPayment =
+        await completePayment(
+          paymentId,
+          txid
+        );
+
+
+      /*
+       * Verify completion.
+       */
+
+      const confirmed =
+        await fetchPayment(
+          paymentId
+        );
+
+
+      const completed =
+        completedPayment &&
+        confirmed &&
+        confirmed.status &&
+        confirmed.status.developer_completed === true;
+
+
+      if (!completed) {
+
+        await db.promise().query(
+          `
+          UPDATE earnings
+
+          SET
+            payout_error = ?
+
+          WHERE id = ?
+          `,
+          [
+            "Pi payment was submitted but has not yet been confirmed as completed.",
+            earning.id
+          ]
+        );
+
+
+        return res.status(202).json({
+
+          success: true,
+
+          status:
+            "processing",
+
+          message:
+            "Pi payout was submitted and is awaiting final Pi confirmation.",
+
+          earning_id:
+            earning.id,
+
+          payment_id:
+            paymentId,
+
+          txid
+
+        });
+
+      }
+
+
+      /*
+       * =====================================================
+       * MARK EARNING AS PAID
+       * =====================================================
+       */
+
+      const [paidResult] =
+        await db.promise().query(
+          `
+          UPDATE earnings
+
+          SET
+            status = 'paid',
+            payout_payment_id = ?,
+            payout_txid = ?,
+            paid_at = CURRENT_TIMESTAMP,
+            payout_error = NULL
+
+          WHERE id = ?
+            AND status = 'pending'
+          `,
+          [
+            paymentId,
+            txid,
+            earning.id
+          ]
+        );
+
+
+      if (
+        !paidResult.affectedRows
+      ) {
+
+        return res.status(409).json({
+
+          success: false,
+
+          message:
+            "Payout completed but earning status could not be updated safely",
+
+          payment_id:
+            paymentId,
+
+          txid
+
+        });
+
+      }
+
+
+      /*
+       * Notify vendor.
+       */
+
+      await db.promise().query(
+        `
+        INSERT INTO notifications
+        (
+          user_id,
+          message,
+          type
+        )
+        VALUES (?, ?, ?)
+        `,
+        [
+          earning.vendor_id,
+
+          `Your vendor earning of ${amount} Pi has been released successfully. Transaction: ${txid}`,
+
+          "earning"
+        ]
+      );
+
+
+      res.json({
+
+        success: true,
+
+        status:
+          "paid",
+
+        message:
+          `Successfully released ${amount} Pi to ${earning.vendor_name}`,
+
+        earning_id:
+          earning.id,
+
+        vendor_id:
+          earning.vendor_id,
+
+        amount_pi:
+          amount,
+
+        payment_id:
+          paymentId,
+
+        txid
+
+      });
+
+
+    } catch (error) {
+
+      console.error(
+        "Vendor A2U payout error:",
+        error.response?.data ||
+        error.message ||
+        error
+      );
+
+
+      /*
+       * Save the error without
+       * falsely marking the earning as paid.
+       */
+
+      try {
+
+        await db.promise().query(
+          `
+          UPDATE earnings
+
+          SET
+            payout_error = ?
+
+          WHERE id = ?
+            AND status = 'pending'
+          `,
+          [
+            JSON.stringify(
+              error.response?.data ||
+              error.message ||
+              "Unknown payout error"
+            ).slice(0, 2000),
+
+            earningId
+          ]
+        );
+
+      } catch (dbError) {
+
+        console.error(
+          "Failed to save payout error:",
+          dbError
+        );
+
+      }
+
+
+      return res.status(500).json({
+
+        success: false,
+
+        message:
+          "Vendor Pi payout failed",
+
+        earning_id:
+          earningId,
+
+        payment_id:
+          paymentId,
+
+        txid
+
+      });
+
+    } finally {
+
+      connection.release();
+
+    }
+
+  }
+);
+
+/* =========================================================
+   SUPER ADMIN
+   GET INCOMPLETE PI A2U PAYMENTS
+
+   GET /api/admin/payments/incomplete
+
+   Used to detect A2U payments that were created
+   but were not completely processed.
+========================================================= */
+
+router.get(
+  "/payments/incomplete",
+  verifyAdmin,
+  requireSuperAdmin,
+  async (req, res) => {
+
+    try {
+
+      const payments =
+        await getIncompleteServerPayments();
+
+      return res.json({
+
+        success: true,
+
+        payments:
+          payments || []
+
+      });
+
+    } catch (error) {
+
+      console.error(
+        "Incomplete Pi A2U payments error:",
+        error.response?.data ||
+        error.message ||
+        error
+      );
+
+      return res.status(500).json({
+
+        success: false,
+
+        message:
+          "Failed to load incomplete Pi payments"
+
+      });
+
+    }
+
+  }
+);
 module.exports = router;
