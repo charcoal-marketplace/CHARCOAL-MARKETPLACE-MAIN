@@ -89,6 +89,14 @@ function publicUser(user) {
     pi_username:
       user.pi_username || null,
 
+    /*
+     * Vendor receiving wallet.
+     * This is PUBLIC wallet information.
+     * NEVER put the private seed here.
+     */
+    pi_wallet_address:
+      user.pi_wallet_address || null,
+
     admin_level:
       user.admin_level || "none",
 
@@ -179,7 +187,9 @@ router.post(
 
       business_location,
 
-      business_description
+      business_description,
+
+      pi_wallet_address
 
     } = req.body || {};
 
@@ -205,6 +215,36 @@ router.post(
       });
 
     }
+
+
+    /*
+     * Wallet address is required for vendor payout.
+     *
+     * We do not validate the wallet by attempting
+     * to access or spend from it.
+     *
+     * It is only stored as the vendor's receiving address.
+     */
+
+    if (
+      !pi_wallet_address ||
+      !String(pi_wallet_address).trim()
+    ) {
+
+      return res.status(400).json({
+
+        success: false,
+
+        message:
+          "Pi wallet address is required for vendor payments"
+
+      });
+
+    }
+
+
+    const walletAddress =
+      String(pi_wallet_address).trim();
 
 
     try {
@@ -279,6 +319,7 @@ router.post(
                  status,
                  pi_uid,
                  pi_username,
+                 pi_wallet_address,
                  admin_level,
                  vendor_status,
                  business_name,
@@ -289,6 +330,7 @@ router.post(
                )
                VALUES
                (
+                 ?,
                  ?,
                  ?,
                  ?,
@@ -317,6 +359,8 @@ router.post(
                 uid,
 
                 username,
+
+                walletAddress,
 
                 "none",
 
@@ -464,6 +508,8 @@ router.post(
 
               business_description=?,
 
+              pi_wallet_address=?,
+
               vendor_applied_at=CURRENT_TIMESTAMP,
 
               vendor_reviewed_at=NULL,
@@ -485,6 +531,8 @@ router.post(
 
               business_description?.trim() ||
                 null,
+
+              walletAddress,
 
               user.id
 
@@ -691,11 +739,13 @@ router.post(
                status,
                pi_uid,
                pi_username,
+               pi_wallet_address,
                admin_level,
                vendor_status
              )
              VALUES
              (
+               ?,
                ?,
                ?,
                ?,
@@ -719,6 +769,8 @@ router.post(
               uid,
 
               username,
+
+              null,
 
               "none",
 
@@ -1012,11 +1064,13 @@ router.post(
                status,
                pi_uid,
                pi_username,
+               pi_wallet_address,
                admin_level,
                vendor_status
              )
              VALUES
              (
+               ?,
                ?,
                ?,
                ?,
@@ -1040,6 +1094,8 @@ router.post(
               uid,
 
               username,
+
+              null,
 
               "super_admin",
 
