@@ -635,6 +635,23 @@ router.get(
    BUYER CONFIRM PRODUCT RECEIVED
 
    POST /api/orders/:id/confirm-received
+
+   IMPORTANT PAYOUT FLOW:
+
+   Buyer confirms receipt
+        ↓
+   orders.buyer_confirmed_at
+        ↓
+   Calculate vendor earnings
+        ↓
+   Create earnings rows
+        ↓
+   earnings.type = 'sale'
+   earnings.status = 'pending'
+        ↓
+   Admin can see the vendor payout
+        ↓
+   Admin releases Pi
 ========================================================= */
 
 router.post(
@@ -664,6 +681,10 @@ router.post(
 
       await connection.beginTransaction();
 
+
+      /* =====================================================
+         LOAD AND LOCK ORDER
+      ===================================================== */
 
       const [orders] =
         await connection.query(
@@ -705,6 +726,10 @@ router.post(
         orders[0];
 
 
+      /* =====================================================
+         PREVENT DUPLICATE BUYER CONFIRMATION
+      ===================================================== */
+
       if (
         order.buyer_confirmed_at
       ) {
@@ -727,6 +752,10 @@ router.post(
       }
 
 
+      /* =====================================================
+         PAYMENT MUST BE COMPLETED
+      ===================================================== */
+
       if (
         order.payment_status !==
         "paid"
@@ -746,6 +775,10 @@ router.post(
 
       }
 
+
+      /* =====================================================
+         DELIVERY MUST BE COMPLETED
+      ===================================================== */
 
       if (
         order.delivery_status !==
@@ -769,7 +802,80 @@ router.post(
       }
 
 
-      const [result] =
+      /* =====================================================
+         GET ALL ORDER ITEMS
+         
+         We use order_items because one order may contain
+         products belonging to multiple vendors.
+      ===================================================== */
+
+      const [orderItems] =
+        await connection.query(
+          `
+          SELECT
+            oi.id,
+            oi.order_id,
+            oi.product_id,
+            oi.vendor_id,
+            oi.product_name,
+            oi.unit_price_pi,
+            oi.quantity,
+            oi.subtotal_pi,
+
+            u.name AS vendor_name,
+            u.pi_uid,
+            u.pi_username,
+            u.role AS vendor_role,
+            u.status AS vendor_account_status,
+            u.vendor_status,
+            u.pi_wallet_address
+
+          FROM order_items oi
+
+          LEFT JOIN users u
+            ON u.id=oi.vendor_id
+
+          WHERE oi.order_id=?
+
+          ORDER BY oi.id ASC
+
+          FOR UPDATE
+          `,
+          [
+            orderId
+          ]
+        );
+
+
+      if (!orderItems.length) {
+
+        await connection.rollback();
+
+
+        return res.status(400).json({
+
+          success: false,
+
+          message:
+            "This order contains no valid order items"
+
+        });
+
+      }
+
+
+      /* =====================================================
+         MARK ORDER AS CONFIRMED
+         
+         We do this inside the SAME transaction as earnings
+         creation.
+         
+         Therefore:
+         - either confirmation + earnings succeed together
+         - or everything rolls back
+      ===================================================== */
+
+      const [confirmResult] =
         await connection.query(
           `
           UPDATE orders
@@ -787,7 +893,7 @@ router.post(
         );
 
 
-      if (!result.affectedRows) {
+      if (!confirmResult.affectedRows) {
 
         await connection.rollback();
 
@@ -804,22 +910,446 @@ router.post(
       }
 
 
-      const [vendors] =
-        await connection.query(
-          `
-          SELECT DISTINCT
-            vendor_id
-          FROM order_items
-          WHERE order_id=?
-            AND vendor_id IS NOT NULL
-          `,
-          [
-            orderId
-          ]
-        );
+      /* =====================================================
+         GROUP ORDER ITEMS BY VENDOR
+         
+         This is important for the multivendor marketplace.
+
+         Example:
+
+         Vendor A:
+           Product 1 = 20 Pi
+           Product 2 = 10 Pi
+
+         Vendor B:
+           Product 3 = 15 Pi
+
+         Result:
+
+         Vendor A = 30 Pi
+         Vendor B = 15 Pi
+      ===================================================== */
+
+      const vendorEarnings =
+        new Map();
 
 
-      for (const vendor of vendors) {
+      for (const item of orderItems) {
+
+        const vendorId =
+          Number(item.vendor_id);
+
+
+        if (
+          !Number.isInteger(vendorId) ||
+          vendorId <= 0
+        ) {
+
+          continue;
+
+        }
+
+
+        const subtotal =
+          money(
+            item.subtotal_pi
+          );
+
+
+        if (
+          !Number.isFinite(subtotal) ||
+          subtotal <= 0
+        ) {
+
+          continue;
+
+        }
+
+
+        if (
+          !vendorEarnings.has(
+            vendorId
+          )
+        ) {
+
+          vendorEarnings.set(
+            vendorId,
+            {
+              vendor_id:
+                vendorId,
+
+              vendor_name:
+                item.vendor_name ||
+                "Vendor",
+
+              pi_uid:
+                item.pi_uid ||
+                null,
+
+              pi_username:
+                item.pi_username ||
+                null,
+
+              pi_wallet_address:
+                item.pi_wallet_address ||
+                null,
+
+              amount_pi:
+                0
+            }
+          );
+
+        }
+
+
+        const vendor =
+          vendorEarnings.get(
+            vendorId
+          );
+
+
+        vendor.amount_pi =
+          money(
+            vendor.amount_pi +
+            subtotal
+          );
+
+      }
+
+
+      /* =====================================================
+         MAKE SURE AT LEAST ONE VALID VENDOR EXISTS
+      ===================================================== */
+
+      if (
+        vendorEarnings.size === 0
+      ) {
+
+        await connection.rollback();
+
+
+        return res.status(400).json({
+
+          success: false,
+
+          message:
+            "No valid vendor earnings could be calculated for this order"
+
+        });
+
+      }
+
+
+      /* =====================================================
+         CREATE VENDOR EARNINGS
+         
+         Each vendor gets one earnings record per order.
+
+         earnings:
+           type   = sale
+           status = pending
+
+         This is exactly what
+         /api/admin/earnings/pending searches for.
+      ===================================================== */
+
+      const createdEarnings = [];
+
+
+      for (
+        const vendor of
+        vendorEarnings.values()
+      ) {
+
+        /* =================================================
+           VALIDATE VENDOR ACCOUNT
+        ================================================= */
+
+        if (
+          vendor.pi_uid === null ||
+          String(
+            vendor.pi_uid
+          ).trim() === ""
+        ) {
+
+          await connection.rollback();
+
+
+          return res.status(400).json({
+
+            success: false,
+
+            message:
+              `Vendor ${vendor.vendor_name} does not have a valid Pi UID and cannot receive earnings.`
+
+          });
+
+        }
+
+
+        /* =================================================
+           VERIFY VENDOR STATUS
+        ================================================= */
+
+        const [vendorRows] =
+          await connection.query(
+            `
+            SELECT
+              id,
+              name,
+              role,
+              status,
+              vendor_status,
+              pi_uid,
+              pi_username,
+              pi_wallet_address
+
+            FROM users
+
+            WHERE id=?
+
+            LIMIT 1
+
+            FOR UPDATE
+            `,
+            [
+              vendor.vendor_id
+            ]
+          );
+
+
+        if (!vendorRows.length) {
+
+          await connection.rollback();
+
+
+          return res.status(404).json({
+
+            success: false,
+
+            message:
+              `Vendor account ${vendor.vendor_id} was not found`
+
+          });
+
+        }
+
+
+        const vendorAccount =
+          vendorRows[0];
+
+
+        if (
+          vendorAccount.role !==
+            "vendor" ||
+          vendorAccount.status !==
+            "approved" ||
+          vendorAccount.vendor_status !==
+            "approved"
+        ) {
+
+          await connection.rollback();
+
+
+          return res.status(400).json({
+
+            success: false,
+
+            message:
+              `Vendor ${vendorAccount.name || vendor.vendor_id} is not approved to receive earnings`
+
+          });
+
+        }
+
+
+        /* =================================================
+           CHECK FOR EXISTING EARNING
+           
+           This prevents duplicate vendor earnings if,
+           for any reason, the same order reaches this
+           logic again.
+        ================================================= */
+
+        const [existingEarnings] =
+          await connection.query(
+            `
+            SELECT
+              id,
+              status,
+              amount_pi,
+              payout_payment_id,
+              payout_txid
+
+            FROM earnings
+
+            WHERE order_id=?
+              AND vendor_id=?
+              AND type='sale'
+
+            LIMIT 1
+
+            FOR UPDATE
+            `,
+            [
+              orderId,
+              vendor.vendor_id
+            ]
+          );
+
+
+        if (
+          existingEarnings.length
+        ) {
+
+          const existing =
+            existingEarnings[0];
+
+
+          /*
+           * If the earning already exists and is paid,
+           * do not create another one.
+           */
+
+          if (
+            existing.status ===
+            "paid"
+          ) {
+
+            await connection.rollback();
+
+
+            return res.status(409).json({
+
+              success: false,
+
+              message:
+                `Vendor earning for ${vendor.vendor_name} has already been paid.`
+
+            });
+
+          }
+
+
+          /*
+           * If it already exists but is still pending,
+           * simply reuse it.
+           */
+
+          createdEarnings.push({
+
+            id:
+              existing.id,
+
+            vendor_id:
+              vendor.vendor_id,
+
+            amount_pi:
+              money(
+                existing.amount_pi
+              ),
+
+            status:
+              existing.status,
+
+            existing:
+              true
+
+          });
+
+
+          continue;
+
+        }
+
+
+        /* =================================================
+           INSERT NEW PENDING VENDOR EARNING
+        ================================================= */
+
+        const [earningResult] =
+          await connection.query(
+            `
+            INSERT INTO earnings
+            (
+              user_id,
+              order_id,
+              vendor_id,
+              type,
+              amount_pi,
+              status,
+              description,
+              payout_payment_id,
+              payout_txid,
+              paid_at,
+              payout_error,
+              created_at
+            )
+            VALUES
+            (
+              ?,
+              ?,
+              ?,
+              'sale',
+              ?,
+              'pending',
+              ?,
+              NULL,
+              NULL,
+              NULL,
+              NULL,
+              CURRENT_TIMESTAMP
+            )
+            `,
+            [
+              vendor.vendor_id,
+              orderId,
+              vendor.vendor_id,
+
+              money(
+                vendor.amount_pi
+              ),
+
+              `Vendor sale earning for order #${orderId}`
+            ]
+          );
+
+
+        createdEarnings.push({
+
+          id:
+            earningResult.insertId,
+
+          vendor_id:
+            vendor.vendor_id,
+
+          vendor_name:
+            vendor.vendor_name,
+
+          amount_pi:
+            money(
+              vendor.amount_pi
+            ),
+
+          status:
+            "pending",
+
+          existing:
+            false
+
+        });
+
+      }
+
+
+      /* =====================================================
+         CREATE VENDOR NOTIFICATIONS
+      ===================================================== */
+
+      for (
+        const vendor of
+        vendorEarnings.values()
+      ) {
 
         await connection.query(
           `
@@ -839,7 +1369,7 @@ router.post(
           [
             vendor.vendor_id,
 
-            `Buyer has confirmed receipt of order #${orderId}. Your eligible earning can now be reviewed for release.`,
+            `Buyer has confirmed receipt of order #${orderId}. Your earning of ${money(vendor.amount_pi)} Pi is now pending Admin release.`,
 
             "earning"
           ]
@@ -848,15 +1378,29 @@ router.post(
       }
 
 
+      /* =====================================================
+         COMMIT EVERYTHING
+         
+         At this point the following are committed together:
+
+         1. buyer_confirmed_at
+         2. vendor earnings
+         3. vendor notifications
+      ===================================================== */
+
       await connection.commit();
 
+
+      /* =====================================================
+         RETURN SUCCESS
+      ===================================================== */
 
       return res.json({
 
         success: true,
 
         message:
-          "Product receipt confirmed successfully",
+          "Product receipt confirmed successfully. Vendor earnings are now pending Admin release.",
 
         order_id:
           orderId,
@@ -865,7 +1409,24 @@ router.post(
           new Date().toISOString(),
 
         payout_status:
-          "awaiting_admin_release"
+          "awaiting_admin_release",
+
+        earnings:
+          createdEarnings.map(
+            earning => ({
+              earning_id:
+                earning.id,
+
+              vendor_id:
+                earning.vendor_id,
+
+              amount_pi:
+                earning.amount_pi,
+
+              status:
+                earning.status
+            })
+          )
 
       });
 
@@ -1375,31 +1936,31 @@ router.put(
 
       const validTransition =
 
-  (
-    currentStatus === "paid" &&
-    requestedStatus === "processing"
-  )
+        (
+          currentStatus === "paid" &&
+          requestedStatus === "processing"
+        )
 
-  ||
+        ||
 
-  (
-    currentStatus === "paid" &&
-    requestedStatus === "shipped"
-  )
+        (
+          currentStatus === "paid" &&
+          requestedStatus === "shipped"
+        )
 
-  ||
+        ||
 
-  (
-    currentStatus === "processing" &&
-    requestedStatus === "shipped"
-  )
+        (
+          currentStatus === "processing" &&
+          requestedStatus === "shipped"
+        )
 
-  ||
+        ||
 
-  (
-    currentStatus === "shipped" &&
-    requestedStatus === "completed"
-  );
+        (
+          currentStatus === "shipped" &&
+          requestedStatus === "completed"
+        );
 
 
       if (!validTransition) {
