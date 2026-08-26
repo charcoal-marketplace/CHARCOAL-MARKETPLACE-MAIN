@@ -10,38 +10,50 @@ const {
   cancelPayment
 } = require("../piService");
 
+
 function roundPi(value) {
-  return Number(Number(value || 0).toFixed(8));
+  return Number(
+    Number(value || 0).toFixed(8)
+  );
 }
+
+
+/* =========================================================
+   CHECKOUT HELPER
+========================================================= */
 
 async function getCheckoutForUser(
   checkoutRef,
   userId,
   connection
 ) {
-  const [orders] = await connection.query(
-    `SELECT
-       o.*,
-       oi.id AS item_id,
-       oi.product_id,
-       oi.vendor_id AS item_vendor_id,
-       oi.product_name,
-       oi.unit_price_pi,
-       oi.quantity,
-       oi.subtotal_pi
-     FROM orders o
-     JOIN order_items oi
-       ON oi.order_id=o.id
-     WHERE o.checkout_ref=?
-       AND o.user_id=?
-     ORDER BY oi.id`,
-    [
-      checkoutRef,
-      userId
-    ]
-  );
+
+  const [orders] =
+    await connection.query(
+      `SELECT
+         o.*,
+         oi.id AS item_id,
+         oi.product_id,
+         oi.vendor_id AS item_vendor_id,
+         oi.product_name,
+         oi.unit_price_pi,
+         oi.quantity,
+         oi.subtotal_pi
+       FROM orders o
+       JOIN order_items oi
+         ON oi.order_id=o.id
+       WHERE o.checkout_ref=?
+         AND o.user_id=?
+       ORDER BY oi.id`,
+      [
+        checkoutRef,
+        userId
+      ]
+    );
+
 
   return orders;
+
 }
 
 
@@ -61,6 +73,28 @@ router.post(
     } = req.body || {};
 
 
+    console.log(
+      "[PAYMENT APPROVE] Handler started:",
+      {
+        userId:
+          req.user?.id,
+
+        paymentId:
+          paymentId ||
+          null,
+
+        checkoutRef:
+          checkoutRef ||
+          null,
+
+        accessToken:
+          accessToken
+            ? "present"
+            : "missing"
+      }
+    );
+
+
     if (
       !paymentId ||
       !checkoutRef ||
@@ -77,17 +111,30 @@ router.post(
 
 
     const connection =
-      await db.promise().getConnection();
+      await db.promise()
+        .getConnection();
 
 
     try {
 
-      /*
-       * Verify Pi account.
-       */
+      console.log(
+        "[PAYMENT APPROVE] Verifying Pi user..."
+      );
+
 
       const piUser =
-        await getPiUser(accessToken);
+        await getPiUser(
+          accessToken
+        );
+
+
+      console.log(
+        "[PAYMENT APPROVE] Pi user verified:",
+        {
+          uid:
+            piUser?.uid
+        }
+      );
 
 
       if (
@@ -104,9 +151,10 @@ router.post(
       }
 
 
-      /*
-       * Find checkout.
-       */
+      console.log(
+        "[PAYMENT APPROVE] Loading checkout..."
+      );
+
 
       const orders =
         await getCheckoutForUser(
@@ -131,12 +179,9 @@ router.post(
         orders[0];
 
 
-      /*
-       * Checkout must still be pending.
-       */
-
       if (
-        order.status !== "pending"
+        order.status !==
+        "pending"
       ) {
 
         return res.status(409).json({
@@ -149,15 +194,24 @@ router.post(
 
 
       const expected =
-        roundPi(order.total_pi);
+        roundPi(
+          order.total_pi
+        );
 
 
-      /*
-       * Verify payment from Pi.
-       */
+      console.log(
+        "[PAYMENT APPROVE] Fetching Pi payment:",
+        {
+          paymentId,
+          expected
+        }
+      );
+
 
       const payment =
-        await fetchPayment(paymentId);
+        await fetchPayment(
+          paymentId
+        );
 
 
       if (!payment) {
@@ -172,13 +226,16 @@ router.post(
 
 
       const amount =
-        Number(payment.amount);
+        Number(
+          payment.amount
+        );
 
 
       if (
         !Number.isFinite(amount) ||
-        Math.abs(amount - expected) >
-          0.000001
+        Math.abs(
+          amount - expected
+        ) > 0.000001
       ) {
 
         return res.status(400).json({
@@ -190,10 +247,6 @@ router.post(
       }
 
 
-      /*
-       * Verify payment owner.
-       */
-
       const paymentUid =
         payment.user_uid ||
         payment.user?.uid;
@@ -202,7 +255,7 @@ router.post(
       if (
         paymentUid &&
         String(paymentUid) !==
-          String(req.user.pi_uid)
+        String(req.user.pi_uid)
       ) {
 
         return res.status(403).json({
@@ -214,18 +267,17 @@ router.post(
       }
 
 
-      /*
-       * Verify checkout metadata.
-       */
-
       const metadata =
-        payment.metadata || {};
+        payment.metadata ||
+        {};
 
 
       if (
         metadata.checkout_ref &&
-        String(metadata.checkout_ref) !==
-          String(checkoutRef)
+        String(
+          metadata.checkout_ref
+        ) !==
+        String(checkoutRef)
       ) {
 
         return res.status(400).json({
@@ -237,12 +289,13 @@ router.post(
       }
 
 
+      console.log(
+        "[PAYMENT APPROVE] Beginning database transaction..."
+      );
+
+
       await connection.beginTransaction();
 
-
-      /*
-       * Check if payment already exists.
-       */
 
       const [existing] =
         await connection.query(
@@ -304,6 +357,7 @@ router.post(
           ]
         );
 
+
       } else {
 
         const [result] =
@@ -347,13 +401,6 @@ router.post(
       }
 
 
-      /*
-       * Put order into payment processing.
-       *
-       * Delivery remains pending until payment
-       * is successfully completed.
-       */
-
       await connection.query(
         `UPDATE orders
          SET
@@ -371,18 +418,26 @@ router.post(
       await connection.commit();
 
 
-      /*
-       * Approve payment with Pi.
-       */
+      console.log(
+        "[PAYMENT APPROVE] Database transaction committed."
+      );
+
 
       let approvedPayment =
         payment;
 
 
       if (
-        payment.status !== "approved" &&
-        payment.status !== "completed"
+        payment.status !==
+          "approved" &&
+        payment.status !==
+          "completed"
       ) {
+
+        console.log(
+          "[PAYMENT APPROVE] Calling Pi approve endpoint..."
+        );
+
 
         try {
 
@@ -391,23 +446,31 @@ router.post(
               paymentId
             );
 
+
         } catch (piError) {
 
-          await db.promise().query(
-            `UPDATE payments
-             SET
-               status='failed',
-               payment_data=?,
-               failed_at=CURRENT_TIMESTAMP
-             WHERE id=?`,
-            [
-              JSON.stringify(
-                piError.response?.data ||
-                piError.message
-              ),
-              dbPaymentId
-            ]
+          console.error(
+            "[PAYMENT APPROVE] Pi approval failed:",
+            piError
           );
+
+
+          await db.promise()
+            .query(
+              `UPDATE payments
+               SET
+                 status='failed',
+                 payment_data=?,
+                 failed_at=CURRENT_TIMESTAMP
+               WHERE id=?`,
+              [
+                JSON.stringify(
+                  piError.response?.data ||
+                  piError.message
+                ),
+                dbPaymentId
+              ]
+            );
 
 
           return res.status(502).json({
@@ -424,71 +487,72 @@ router.post(
       }
 
 
-      /*
-       * Save approval.
-       */
-
-      await db.promise().query(
-        `UPDATE payments
-         SET
-           status='approved',
-           approval_data=?,
-           approved_at=CURRENT_TIMESTAMP
-         WHERE id=?`,
-        [
-          JSON.stringify(
-            approvedPayment || payment
-          ),
-          dbPaymentId
-        ]
-      );
+      await db.promise()
+        .query(
+          `UPDATE payments
+           SET
+             status='approved',
+             approval_data=?,
+             approved_at=CURRENT_TIMESTAMP
+           WHERE id=?`,
+          [
+            JSON.stringify(
+              approvedPayment ||
+              payment
+            ),
+            dbPaymentId
+          ]
+        );
 
 
-      /*
-       * Payment log.
-       */
-
-      await db.promise().query(
-        `INSERT INTO payment_logs
-         (
-           payment_id,
-           order_id,
-           user_id,
-           event_type,
-           payment_status,
-           pi_payment_id,
-           amount_pi,
-           request_data,
-           response_data
-         )
-         VALUES (
-           ?,
-           ?,
-           ?,
-           ?,
-           ?,
-           ?,
-           ?,
-           ?,
-           ?
-         )`,
-        [
-          dbPaymentId,
-          order.id,
-          req.user.id,
-          "server_approval",
-          "approved",
-          paymentId,
-          expected,
-          JSON.stringify({
+      await db.promise()
+        .query(
+          `INSERT INTO payment_logs
+           (
+             payment_id,
+             order_id,
+             user_id,
+             event_type,
+             payment_status,
+             pi_payment_id,
+             amount_pi,
+             request_data,
+             response_data
+           )
+           VALUES (
+             ?,
+             ?,
+             ?,
+             ?,
+             ?,
+             ?,
+             ?,
+             ?,
+             ?
+           )`,
+          [
+            dbPaymentId,
+            order.id,
+            req.user.id,
+            "server_approval",
+            "approved",
             paymentId,
-            checkout_ref:
-              checkoutRef
-          }),
-          JSON.stringify(
-            approvedPayment || payment
-          )
-        ]
+            expected,
+            JSON.stringify({
+              paymentId,
+              checkout_ref:
+                checkoutRef
+            }),
+            JSON.stringify(
+              approvedPayment ||
+              payment
+            )
+          ]
+        );
+
+
+      console.log(
+        "[PAYMENT APPROVE] Completed successfully."
       );
 
 
@@ -507,7 +571,7 @@ router.post(
 
 
       console.error(
-        "Payment approval:",
+        "Payment approval ERROR:",
         error
       );
 
@@ -533,24 +597,6 @@ router.post(
 
 /* =========================================================
    PI SDK -> SERVER COMPLETION
-
-   IMPORTANT ORDER FLOW:
-
-   pending
-      ↓
-   payment completed
-      ↓
-   paid
-      ↓
-   vendor marks shipped
-      ↓
-   shipped
-      ↓
-   vendor marks delivered
-      ↓
-   completed / delivered
-      ↓
-   buyer confirms receipt
 ========================================================= */
 
 router.post(
@@ -565,11 +611,42 @@ router.post(
     } = req.body || {};
 
 
+    console.log(
+      "[PAYMENT COMPLETE] 1. Handler started:",
+      {
+        userId:
+          req.user?.id,
+
+        piUid:
+          req.user?.pi_uid ||
+          null,
+
+        paymentId:
+          paymentId ||
+          null,
+
+        txid:
+          txid ||
+          null,
+
+        accessToken:
+          accessToken
+            ? "present"
+            : "missing"
+      }
+    );
+
+
     if (
       !paymentId ||
       !txid ||
       !accessToken
     ) {
+
+      console.error(
+        "[PAYMENT COMPLETE] Missing required payment data."
+      );
+
 
       return res.status(400).json({
         success: false,
@@ -581,23 +658,52 @@ router.post(
 
 
     const connection =
-      await db.promise().getConnection();
+      await db.promise()
+        .getConnection();
 
 
     try {
 
-      /*
-       * Verify Pi account.
-       */
+      /* =====================================================
+         STEP 2 - VERIFY PI USER
+      ===================================================== */
+
+      console.log(
+        "[PAYMENT COMPLETE] 2. Verifying Pi user..."
+      );
+
 
       const piUser =
-        await getPiUser(accessToken);
+        await getPiUser(
+          accessToken
+        );
+
+
+      console.log(
+        "[PAYMENT COMPLETE] 3. Pi user verified:",
+        {
+          uid:
+            piUser?.uid
+        }
+      );
 
 
       if (
         String(piUser.uid) !==
         String(req.user.pi_uid)
       ) {
+
+        console.error(
+          "[PAYMENT COMPLETE] Pi UID mismatch:",
+          {
+            piUidFromPi:
+              piUser?.uid,
+
+            piUidFromDatabase:
+              req.user?.pi_uid
+          }
+        );
+
 
         return res.status(403).json({
           success: false,
@@ -608,12 +714,26 @@ router.post(
       }
 
 
+      /* =====================================================
+         STEP 4 - BEGIN DATABASE TRANSACTION
+      ===================================================== */
+
+      console.log(
+        "[PAYMENT COMPLETE] 4. Beginning database transaction..."
+      );
+
+
       await connection.beginTransaction();
 
 
-      /*
-       * Load payment.
-       */
+      /* =====================================================
+         STEP 5 - LOAD PAYMENT
+      ===================================================== */
+
+      console.log(
+        "[PAYMENT COMPLETE] 5. Loading database payment..."
+      );
+
 
       const [paymentRows] =
         await connection.query(
@@ -632,6 +752,13 @@ router.post(
 
         await connection.rollback();
 
+
+        console.error(
+          "[PAYMENT COMPLETE] Payment record not found:",
+          paymentId
+        );
+
+
         return res.status(404).json({
           success: false,
           message:
@@ -645,9 +772,27 @@ router.post(
         paymentRows[0];
 
 
-      /*
-       * Already completed?
-       */
+      console.log(
+        "[PAYMENT COMPLETE] 6. Database payment found:",
+        {
+          id:
+            dbPayment.id,
+
+          user_id:
+            dbPayment.user_id,
+
+          status:
+            dbPayment.status,
+
+          amount_pi:
+            dbPayment.amount_pi
+        }
+      );
+
+
+      /* =====================================================
+         ALREADY COMPLETED
+      ===================================================== */
 
       if (
         dbPayment.status ===
@@ -655,6 +800,7 @@ router.post(
       ) {
 
         await connection.rollback();
+
 
         return res.json({
           success: true,
@@ -665,17 +811,21 @@ router.post(
       }
 
 
-      /*
-       * Payment must belong to
-       * authenticated account.
-       */
+      /* =====================================================
+         VERIFY PAYMENT OWNER
+      ===================================================== */
 
       if (
-        Number(dbPayment.user_id) !==
-        Number(req.user.id)
+        Number(
+          dbPayment.user_id
+        ) !==
+        Number(
+          req.user.id
+        )
       ) {
 
         await connection.rollback();
+
 
         return res.status(403).json({
           success: false,
@@ -686,9 +836,14 @@ router.post(
       }
 
 
-      /*
-       * Verify payment with Pi.
-       */
+      /* =====================================================
+         STEP 7 - FETCH PAYMENT FROM PI
+      ===================================================== */
+
+      console.log(
+        "[PAYMENT COMPLETE] 7. Fetching payment from Pi..."
+      );
+
 
       const piPayment =
         await fetchPayment(
@@ -700,6 +855,12 @@ router.post(
 
         await connection.rollback();
 
+
+        console.error(
+          "[PAYMENT COMPLETE] Pi payment could not be fetched."
+        );
+
+
         return res.status(400).json({
           success: false,
           message:
@@ -709,9 +870,21 @@ router.post(
       }
 
 
-      /*
-       * Verify transaction ID.
-       */
+      console.log(
+        "[PAYMENT COMPLETE] 8. Pi payment fetched:",
+        {
+          status:
+            piPayment.status,
+
+          amount:
+            piPayment.amount
+        }
+      );
+
+
+      /* =====================================================
+         VERIFY TRANSACTION ID
+      ===================================================== */
 
       const piTxid =
         piPayment.transaction_id ||
@@ -721,10 +894,21 @@ router.post(
       if (
         piTxid &&
         String(piTxid) !==
-          String(txid)
+        String(txid)
       ) {
 
         await connection.rollback();
+
+
+        console.error(
+          "[PAYMENT COMPLETE] Transaction ID mismatch:",
+          {
+            piTxid,
+            receivedTxid:
+              txid
+          }
+        );
+
 
         return res.status(400).json({
           success: false,
@@ -735,9 +919,9 @@ router.post(
       }
 
 
-      /*
-       * Verify amount.
-       */
+      /* =====================================================
+         VERIFY AMOUNT
+      ===================================================== */
 
       const expected =
         Number(
@@ -745,17 +929,24 @@ router.post(
         );
 
 
+      const piAmount =
+        Number(
+          piPayment.amount
+        );
+
+
       if (
         !Number.isFinite(
-          Number(piPayment.amount)
+          piAmount
         ) ||
         Math.abs(
-          Number(piPayment.amount) -
+          piAmount -
           expected
         ) > 0.000001
       ) {
 
         await connection.rollback();
+
 
         return res.status(400).json({
           success: false,
@@ -766,9 +957,14 @@ router.post(
       }
 
 
-      /*
-       * Complete payment on Pi.
-       */
+      /* =====================================================
+         STEP 9 - COMPLETE PAYMENT ON PI
+      ===================================================== */
+
+      console.log(
+        "[PAYMENT COMPLETE] 9. Calling Pi complete endpoint..."
+      );
+
 
       await completePayment(
         paymentId,
@@ -776,9 +972,19 @@ router.post(
       );
 
 
-      /*
-       * Confirm completion with Pi.
-       */
+      console.log(
+        "[PAYMENT COMPLETE] 10. Pi completion request succeeded."
+      );
+
+
+      /* =====================================================
+         STEP 11 - CONFIRM COMPLETION WITH PI
+      ===================================================== */
+
+      console.log(
+        "[PAYMENT COMPLETE] 11. Confirming payment with Pi..."
+      );
+
 
       const confirmed =
         await fetchPayment(
@@ -789,10 +995,21 @@ router.post(
       if (
         !confirmed ||
         confirmed.status !==
-          "completed"
+        "completed"
       ) {
 
         await connection.rollback();
+
+
+        console.error(
+          "[PAYMENT COMPLETE] Pi did not confirm completion:",
+          {
+            status:
+              confirmed?.status ||
+              null
+          }
+        );
+
 
         return res.status(400).json({
           success: false,
@@ -803,9 +1020,19 @@ router.post(
       }
 
 
-      /*
-       * Find order.
-       */
+      console.log(
+        "[PAYMENT COMPLETE] 12. Pi confirmed payment completion."
+      );
+
+
+      /* =====================================================
+         FIND ORDER
+      ===================================================== */
+
+      console.log(
+        "[PAYMENT COMPLETE] 13. Loading order..."
+      );
+
 
       const [orders] =
         await connection.query(
@@ -835,9 +1062,26 @@ router.post(
         orders[0];
 
 
-      /*
-       * Load order items.
-       */
+      console.log(
+        "[PAYMENT COMPLETE] 14. Order found:",
+        {
+          orderId:
+            order.id,
+
+          status:
+            order.status
+        }
+      );
+
+
+      /* =====================================================
+         LOAD ORDER ITEMS
+      ===================================================== */
+
+      console.log(
+        "[PAYMENT COMPLETE] 15. Loading order items..."
+      );
+
 
       const [items] =
         await connection.query(
@@ -860,22 +1104,34 @@ router.post(
       }
 
 
-      /*
-       * Calculate platform fee
-       * and vendor earnings.
-       */
+      console.log(
+        "[PAYMENT COMPLETE] 16. Order items found:",
+        items.length
+      );
+
+
+      /* =====================================================
+         CALCULATE PLATFORM FEE
+      ===================================================== */
 
       const feePercent =
         Number(
-          process.env.PLATFORM_FEE_PERCENT || 0
+          process.env.PLATFORM_FEE_PERCENT ||
+          0
         );
 
 
-      let platformFeeTotal = 0;
-      let vendorTotal = 0;
+      let platformFeeTotal =
+        0;
+
+      let vendorTotal =
+        0;
 
 
-      for (const item of items) {
+      for (
+        const item
+        of items
+      ) {
 
         const subtotal =
           Number(
@@ -893,7 +1149,8 @@ router.post(
 
         const vendorAmount =
           roundPi(
-            subtotal - fee
+            subtotal -
+            fee
           );
 
 
@@ -911,10 +1168,9 @@ router.post(
           );
 
 
-        /*
-         * Create vendor earning
-         * only once.
-         */
+        /* ===================================================
+           CREATE VENDOR EARNING ONLY ONCE
+        =================================================== */
 
         const [existing] =
           await connection.query(
@@ -968,9 +1224,9 @@ router.post(
       }
 
 
-      /*
-       * Platform fee.
-       */
+      /* =====================================================
+         PLATFORM FEE
+      ===================================================== */
 
       if (
         platformFeeTotal > 0
@@ -1038,25 +1294,28 @@ router.post(
       }
 
 
-      /*
-       * =====================================================
-       * CRITICAL ORDER STATUS UPDATE
-       *
-       * Successful Pi payment changes:
-       *
-       * status:
-       * pending -> paid
-       *
-       * payment_status:
-       * processing -> paid
-       *
-       * delivery_status:
-       * pending -> processing
-       *
-       * This is what allows account.js to display
-       * "Mark as Shipped".
-       * =====================================================
-       */
+      /* =====================================================
+         CRITICAL ORDER STATUS UPDATE
+
+         pending
+             ↓
+         paid
+             ↓
+         vendor ships
+             ↓
+         shipped
+             ↓
+         delivered
+             ↓
+         buyer confirms
+             ↓
+         completed
+      ===================================================== */
+
+      console.log(
+        "[PAYMENT COMPLETE] 17. Updating order to paid..."
+      );
+
 
       await connection.query(
         `UPDATE orders
@@ -1078,9 +1337,14 @@ router.post(
       );
 
 
-      /*
-       * Update payment record.
-       */
+      /* =====================================================
+         UPDATE PAYMENT
+      ===================================================== */
+
+      console.log(
+        "[PAYMENT COMPLETE] 18. Updating payment record..."
+      );
+
 
       await connection.query(
         `UPDATE payments
@@ -1100,9 +1364,9 @@ router.post(
       );
 
 
-      /*
-       * Payment log.
-       */
+      /* =====================================================
+         PAYMENT LOG
+      ===================================================== */
 
       await connection.query(
         `INSERT INTO payment_logs
@@ -1144,9 +1408,9 @@ router.post(
       );
 
 
-      /*
-       * Notify buyer.
-       */
+      /* =====================================================
+         NOTIFY BUYER
+      ===================================================== */
 
       await connection.query(
         `INSERT INTO notifications
@@ -1168,15 +1432,17 @@ router.post(
       );
 
 
-      /*
-       * Notify vendors.
-       */
+      /* =====================================================
+         NOTIFY VENDORS
+      ===================================================== */
 
       const vendorIds = [
         ...new Set(
           items.map(
             item =>
-              Number(item.vendor_id)
+              Number(
+                item.vendor_id
+              )
           )
         )
       ];
@@ -1192,7 +1458,8 @@ router.post(
             item =>
               Number(
                 item.vendor_id
-              ) === vendorId
+              ) ===
+              vendorId
           );
 
 
@@ -1227,11 +1494,28 @@ router.post(
       }
 
 
-      /*
-       * Everything succeeded.
-       */
+      /* =====================================================
+         FINAL COMMIT
+      ===================================================== */
+
+      console.log(
+        "[PAYMENT COMPLETE] 19. Committing final transaction..."
+      );
+
 
       await connection.commit();
+
+
+      console.log(
+        "[PAYMENT COMPLETE] 20. PAYMENT COMPLETED SUCCESSFULLY:",
+        {
+          paymentId,
+          orderId:
+            order.id,
+          amount:
+            expected
+        }
+      );
 
 
       res.json({
@@ -1255,12 +1539,6 @@ router.post(
         await connection.rollback();
       } catch {}
 
-
-      /*
-       * IMPORTANT:
-       * Keep the actual error visible in Railway
-       * while we are debugging the deployment.
-       */
 
       console.error(
         "Payment completion ERROR:",
@@ -1318,7 +1596,8 @@ router.post(
 
 
     const connection =
-      await db.promise().getConnection();
+      await db.promise()
+        .getConnection();
 
 
     try {
