@@ -1375,24 +1375,31 @@ router.put(
 
       const validTransition =
 
-        (
-          currentStatus === "paid" &&
-          requestedStatus === "processing"
-        )
+  (
+    currentStatus === "paid" &&
+    requestedStatus === "processing"
+  )
 
-        ||
+  ||
 
-        (
-          currentStatus === "processing" &&
-          requestedStatus === "shipped"
-        )
+  (
+    currentStatus === "paid" &&
+    requestedStatus === "shipped"
+  )
 
-        ||
+  ||
 
-        (
-          currentStatus === "shipped" &&
-          requestedStatus === "completed"
-        );
+  (
+    currentStatus === "processing" &&
+    requestedStatus === "shipped"
+  )
+
+  ||
+
+  (
+    currentStatus === "shipped" &&
+    requestedStatus === "completed"
+  );
 
 
       if (!validTransition) {
