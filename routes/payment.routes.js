@@ -12,9 +12,78 @@ const {
 
 
 function roundPi(value) {
+
   return Number(
     Number(value || 0).toFixed(8)
   );
+
+}
+
+
+/* =========================================================
+   PI STATUS HELPERS
+
+   Pi returns payment.status as an OBJECT:
+
+   {
+     developer_approved: true,
+     transaction_verified: true,
+     developer_completed: true,
+     cancelled: false,
+     user_cancelled: false
+   }
+
+   These helpers prevent the server from incorrectly
+   comparing the status object with strings.
+========================================================= */
+
+function getPaymentStatus(payment) {
+
+  return payment?.status || {};
+
+}
+
+
+function isDeveloperApproved(payment) {
+
+  return (
+    getPaymentStatus(payment)
+      .developer_approved === true
+  );
+
+}
+
+
+function isTransactionVerified(payment) {
+
+  return (
+    getPaymentStatus(payment)
+      .transaction_verified === true
+  );
+
+}
+
+
+function isDeveloperCompleted(payment) {
+
+  return (
+    getPaymentStatus(payment)
+      .developer_completed === true
+  );
+
+}
+
+
+function isCancelled(payment) {
+
+  const status =
+    getPaymentStatus(payment);
+
+  return (
+    status.cancelled === true ||
+    status.user_cancelled === true
+  );
+
 }
 
 
@@ -225,6 +294,23 @@ router.post(
       }
 
 
+      /*
+       * Reject cancelled payments.
+       */
+
+      if (
+        isCancelled(payment)
+      ) {
+
+        return res.status(400).json({
+          success: false,
+          message:
+            "Pi payment has been cancelled"
+        });
+
+      }
+
+
       const amount =
         Number(
           payment.amount
@@ -427,11 +513,23 @@ router.post(
         payment;
 
 
+      /*
+       * IMPORTANT:
+       *
+       * Pi status is an OBJECT.
+       *
+       * We must NOT do:
+       *
+       * payment.status !== "approved"
+       *
+       * Instead we check:
+       *
+       * payment.status.developer_approved
+       */
+
       if (
-        payment.status !==
-          "approved" &&
-        payment.status !==
-          "completed"
+        !isDeveloperApproved(payment) &&
+        !isDeveloperCompleted(payment)
       ) {
 
         console.log(
@@ -451,7 +549,8 @@ router.post(
 
           console.error(
             "[PAYMENT APPROVE] Pi approval failed:",
-            piError
+            piError.response?.data ||
+            piError.message
           );
 
 
@@ -486,6 +585,10 @@ router.post(
 
       }
 
+
+      /*
+       * Store approval response.
+       */
 
       await db.promise()
         .query(
@@ -556,7 +659,7 @@ router.post(
       );
 
 
-      res.json({
+      return res.json({
         success: true,
         message:
           "Payment approved"
@@ -571,12 +674,12 @@ router.post(
 
 
       console.error(
-        "Payment approval ERROR:",
+        "[PAYMENT APPROVE] ERROR:",
         error
       );
 
 
-      res.status(500).json({
+      return res.status(500).json({
         success: false,
         message:
           "Payment approval failed",
@@ -883,7 +986,27 @@ router.post(
 
 
       /* =====================================================
-         VERIFY TRANSACTION ID
+         CHECK CANCELLATION
+      ===================================================== */
+
+      if (
+        isCancelled(piPayment)
+      ) {
+
+        await connection.rollback();
+
+
+        return res.status(400).json({
+          success: false,
+          message:
+            "Pi payment was cancelled"
+        });
+
+      }
+
+
+      /* =====================================================
+         VERIFY PI TRANSACTION
       ===================================================== */
 
       const piTxid =
@@ -904,6 +1027,7 @@ router.post(
           "[PAYMENT COMPLETE] Transaction ID mismatch:",
           {
             piTxid,
+
             receivedTxid:
               txid
           }
@@ -914,6 +1038,35 @@ router.post(
           success: false,
           message:
             "Transaction ID mismatch"
+        });
+
+      }
+
+
+      /*
+       * The transaction must be verified by Pi
+       * before we mark the marketplace order as paid.
+       */
+
+      if (
+        !isTransactionVerified(
+          piPayment
+        )
+      ) {
+
+        await connection.rollback();
+
+
+        console.error(
+          "[PAYMENT COMPLETE] Pi transaction is not verified yet:",
+          piPayment.status
+        );
+
+
+        return res.status(400).json({
+          success: false,
+          message:
+            "Pi transaction has not been verified yet"
         });
 
       }
@@ -966,15 +1119,43 @@ router.post(
       );
 
 
-      await completePayment(
-        paymentId,
-        txid
-      );
+      let completionResponse;
 
 
-      console.log(
-        "[PAYMENT COMPLETE] 10. Pi completion request succeeded."
-      );
+      /*
+       * If Pi has already marked it completed,
+       * do not send another completion request.
+       */
+
+      if (
+        isDeveloperCompleted(
+          piPayment
+        )
+      ) {
+
+        console.log(
+          "[PAYMENT COMPLETE] Pi payment is already developer completed."
+        );
+
+
+        completionResponse =
+          piPayment;
+
+
+      } else {
+
+        completionResponse =
+          await completePayment(
+            paymentId,
+            txid
+          );
+
+
+        console.log(
+          "[PAYMENT COMPLETE] 10. Pi completion request succeeded."
+        );
+
+      }
 
 
       /* =====================================================
@@ -986,16 +1167,45 @@ router.post(
       );
 
 
+      /*
+       * Fetch the payment again because the response
+       * from the completion endpoint is not the safest
+       * source for the final state.
+       */
+
       const confirmed =
         await fetchPayment(
           paymentId
         );
 
 
+      /*
+       * IMPORTANT:
+       *
+       * Pi returns:
+       *
+       * confirmed.status = {
+       *   developer_approved: true,
+       *   transaction_verified: true,
+       *   developer_completed: true,
+       *   cancelled: false,
+       *   user_cancelled: false
+       * }
+       *
+       * Therefore we check:
+       *
+       * confirmed.status.developer_completed
+       *
+       * NOT:
+       *
+       * confirmed.status === "completed"
+       */
+
       if (
         !confirmed ||
-        confirmed.status !==
-        "completed"
+        !isDeveloperCompleted(
+          confirmed
+        )
       ) {
 
         await connection.rollback();
@@ -1004,6 +1214,8 @@ router.post(
         console.error(
           "[PAYMENT COMPLETE] Pi did not confirm completion:",
           {
+            paymentId,
+
             status:
               confirmed?.status ||
               null
@@ -1123,6 +1335,7 @@ router.post(
 
       let platformFeeTotal =
         0;
+
 
       let vendorTotal =
         0;
@@ -1296,20 +1509,6 @@ router.post(
 
       /* =====================================================
          CRITICAL ORDER STATUS UPDATE
-
-         pending
-             ↓
-         paid
-             ↓
-         vendor ships
-             ↓
-         shipped
-             ↓
-         delivered
-             ↓
-         buyer confirms
-             ↓
-         completed
       ===================================================== */
 
       console.log(
@@ -1356,9 +1555,11 @@ router.post(
          WHERE id=?`,
         [
           txid,
+
           JSON.stringify(
             confirmed
           ),
+
           dbPayment.id
         ]
       );
@@ -1426,7 +1627,9 @@ router.post(
          )`,
         [
           req.user.id,
+
           `Payment of ${expected} Pi completed successfully. Your order is now being prepared for shipment.`,
+
           "payment"
         ]
       );
@@ -1486,7 +1689,9 @@ router.post(
            )`,
           [
             vendorId,
+
             `New paid order received for ${names}. Please prepare the order and mark it as shipped when handed to the delivery service.`,
+
             "order"
           ]
         );
@@ -1510,24 +1715,31 @@ router.post(
         "[PAYMENT COMPLETE] 20. PAYMENT COMPLETED SUCCESSFULLY:",
         {
           paymentId,
+
           orderId:
             order.id,
+
           amount:
             expected
         }
       );
 
 
-      res.json({
+      return res.json({
         success: true,
+
         message:
           "Payment completed successfully",
+
         payment_id:
           paymentId,
+
         order_id:
           order.id,
+
         order_status:
           "paid",
+
         delivery_status:
           "processing"
       });
@@ -1541,12 +1753,12 @@ router.post(
 
 
       console.error(
-        "Payment completion ERROR:",
+        "[PAYMENT COMPLETE] ERROR:",
         error
       );
 
 
-      res.status(500).json({
+      return res.status(500).json({
         success: false,
         message:
           "Payment completion failed",
@@ -1743,7 +1955,7 @@ router.post(
       await connection.commit();
 
 
-      res.json({
+      return res.json({
         success: true,
         message:
           "Payment cancelled"
@@ -1763,7 +1975,7 @@ router.post(
       );
 
 
-      res.status(500).json({
+      return res.status(500).json({
         success: false,
         message:
           "Cancellation failed",
