@@ -3,27 +3,83 @@ const StellarSdk = require("@stellar/stellar-sdk");
 
 const PI_BASE_URL = "https://api.minepi.com/v2";
 
+
+/* =========================================================
+   SAFE PI ERROR DETAILS
+   NEVER expose access tokens or private seeds.
+========================================================= */
+
+function getPiErrorDetails(error) {
+
+  return {
+    message:
+      error?.message ||
+      "Unknown Pi API error",
+
+    status:
+      error?.response?.status ||
+      null,
+
+    data:
+      error?.response?.data ||
+      null
+  };
+
+}
+
+
+/* =========================================================
+   PI API KEY
+========================================================= */
+
 function requireApiKey() {
+
   if (!process.env.PI_API_KEY) {
-    throw new Error("PI_API_KEY is missing");
+
+    throw new Error(
+      "PI_API_KEY is missing"
+    );
+
   }
 
   return process.env.PI_API_KEY;
+
 }
 
+
+/* =========================================================
+   PI WALLET PRIVATE SEED
+========================================================= */
+
 function requirePrivateSeed() {
+
   if (!process.env.PI_WALLET_PRIVATE_SEED) {
-    throw new Error("PI_WALLET_PRIVATE_SEED is missing");
+
+    throw new Error(
+      "PI_WALLET_PRIVATE_SEED is missing"
+    );
+
   }
 
   return process.env.PI_WALLET_PRIVATE_SEED;
+
 }
 
+
+/* =========================================================
+   SERVER API HEADERS
+========================================================= */
+
 function apiHeaders() {
+
   return {
-    Authorization: `Key ${requireApiKey()}`,
-    "Content-Type": "application/json"
+    Authorization:
+      `Key ${requireApiKey()}`,
+
+    "Content-Type":
+      "application/json"
   };
+
 }
 
 
@@ -33,21 +89,83 @@ function apiHeaders() {
 
 async function getPiUser(accessToken) {
 
-  const response = await axios.get(
-    `${PI_BASE_URL}/me`,
-    {
-      headers: {
-        Authorization: `Bearer ${accessToken}`
-      },
-      timeout: 10000
-    }
-  );
+  if (!accessToken) {
 
-  if (!response.data?.uid) {
-    throw new Error("Invalid Pi user");
+    throw new Error(
+      "Pi access token is missing"
+    );
+
   }
 
-  return response.data;
+
+  console.log(
+    "[PI SERVICE] Verifying Pi user..."
+  );
+
+
+  try {
+
+    const response =
+      await axios.get(
+        `${PI_BASE_URL}/me`,
+        {
+          headers: {
+            Authorization:
+              `Bearer ${accessToken}`
+          },
+
+          timeout: 10000
+        }
+      );
+
+
+    if (!response.data?.uid) {
+
+      throw new Error(
+        "Invalid Pi user response"
+      );
+
+    }
+
+
+    console.log(
+      "[PI SERVICE] Pi user verified:",
+      {
+        uid:
+          response.data.uid,
+
+        username:
+          response.data.username ||
+          null
+      }
+    );
+
+
+    return response.data;
+
+
+  } catch (error) {
+
+    const details =
+      getPiErrorDetails(error);
+
+
+    console.error(
+      "[PI SERVICE] Pi user verification failed:",
+      details
+    );
+
+
+    throw new Error(
+      `Pi user verification failed: ${
+        details.data?.error ||
+        details.data?.message ||
+        details.message
+      }`
+    );
+
+  }
+
 }
 
 
@@ -58,30 +176,74 @@ async function getPiUser(accessToken) {
 async function fetchPayment(paymentId) {
 
   if (!paymentId) {
+
     return null;
+
   }
+
+
+  console.log(
+    "[PI SERVICE] Fetching payment:",
+    paymentId
+  );
+
 
   try {
 
-    const response = await axios.get(
-      `${PI_BASE_URL}/payments/${paymentId}`,
+    const response =
+      await axios.get(
+        `${PI_BASE_URL}/payments/${paymentId}`,
+        {
+          headers:
+            apiHeaders(),
+
+          timeout: 15000
+        }
+      );
+
+
+    const payment =
+      response.data ||
+      null;
+
+
+    console.log(
+      "[PI SERVICE] Payment fetched:",
       {
-        headers: apiHeaders(),
-        timeout: 15000
+        paymentId,
+        status:
+          payment?.status ||
+          null,
+
+        amount:
+          payment?.amount ||
+          null
       }
     );
 
-    return response.data || null;
+
+    return payment;
+
 
   } catch (error) {
 
+    const details =
+      getPiErrorDetails(error);
+
+
     console.error(
-      "Pi payment fetch:",
-      error.response?.data || error.message
+      "[PI SERVICE] Pi payment fetch failed:",
+      {
+        paymentId,
+        ...details
+      }
     );
 
+
     return null;
+
   }
+
 }
 
 
@@ -91,16 +253,70 @@ async function fetchPayment(paymentId) {
 
 async function approvePayment(paymentId) {
 
-  const response = await axios.post(
-    `${PI_BASE_URL}/payments/${paymentId}/approve`,
-    {},
-    {
-      headers: apiHeaders(),
-      timeout: 15000
-    }
+  if (!paymentId) {
+
+    throw new Error(
+      "Payment ID is required for approval"
+    );
+
+  }
+
+
+  console.log(
+    "[PI SERVICE] Approving payment:",
+    paymentId
   );
 
-  return response.data || null;
+
+  try {
+
+    const response =
+      await axios.post(
+        `${PI_BASE_URL}/payments/${paymentId}/approve`,
+        {},
+        {
+          headers:
+            apiHeaders(),
+
+          timeout: 15000
+        }
+      );
+
+
+    console.log(
+      "[PI SERVICE] Pi payment approval response:",
+      {
+        paymentId,
+        status:
+          response.data?.status ||
+          null
+      }
+    );
+
+
+    return response.data ||
+      null;
+
+
+  } catch (error) {
+
+    const details =
+      getPiErrorDetails(error);
+
+
+    console.error(
+      "[PI SERVICE] Pi payment approval failed:",
+      {
+        paymentId,
+        ...details
+      }
+    );
+
+
+    throw error;
+
+  }
+
 }
 
 
@@ -108,20 +324,90 @@ async function approvePayment(paymentId) {
    COMPLETE PAYMENT
 ========================================================= */
 
-async function completePayment(paymentId, txid) {
+async function completePayment(
+  paymentId,
+  txid
+) {
 
-  const response = await axios.post(
-    `${PI_BASE_URL}/payments/${paymentId}/complete`,
+  if (!paymentId) {
+
+    throw new Error(
+      "Payment ID is required for completion"
+    );
+
+  }
+
+
+  if (!txid) {
+
+    throw new Error(
+      "Transaction ID is required for completion"
+    );
+
+  }
+
+
+  console.log(
+    "[PI SERVICE] Completing payment:",
     {
+      paymentId,
       txid
-    },
-    {
-      headers: apiHeaders(),
-      timeout: 15000
     }
   );
 
-  return response.data || null;
+
+  try {
+
+    const response =
+      await axios.post(
+        `${PI_BASE_URL}/payments/${paymentId}/complete`,
+        {
+          txid
+        },
+        {
+          headers:
+            apiHeaders(),
+
+          timeout: 15000
+        }
+      );
+
+
+    console.log(
+      "[PI SERVICE] Pi payment completion response:",
+      {
+        paymentId,
+        status:
+          response.data?.status ||
+          null
+      }
+    );
+
+
+    return response.data ||
+      null;
+
+
+  } catch (error) {
+
+    const details =
+      getPiErrorDetails(error);
+
+
+    console.error(
+      "[PI SERVICE] Pi payment completion failed:",
+      {
+        paymentId,
+        txid,
+        ...details
+      }
+    );
+
+
+    throw error;
+
+  }
+
 }
 
 
@@ -131,16 +417,70 @@ async function completePayment(paymentId, txid) {
 
 async function cancelPayment(paymentId) {
 
-  const response = await axios.post(
-    `${PI_BASE_URL}/payments/${paymentId}/cancel`,
-    {},
-    {
-      headers: apiHeaders(),
-      timeout: 15000
-    }
+  if (!paymentId) {
+
+    throw new Error(
+      "Payment ID is required for cancellation"
+    );
+
+  }
+
+
+  console.log(
+    "[PI SERVICE] Cancelling payment:",
+    paymentId
   );
 
-  return response.data || null;
+
+  try {
+
+    const response =
+      await axios.post(
+        `${PI_BASE_URL}/payments/${paymentId}/cancel`,
+        {},
+        {
+          headers:
+            apiHeaders(),
+
+          timeout: 15000
+        }
+      );
+
+
+    console.log(
+      "[PI SERVICE] Pi payment cancellation response:",
+      {
+        paymentId,
+        status:
+          response.data?.status ||
+          null
+      }
+    );
+
+
+    return response.data ||
+      null;
+
+
+  } catch (error) {
+
+    const details =
+      getPiErrorDetails(error);
+
+
+    console.error(
+      "[PI SERVICE] Pi payment cancellation failed:",
+      {
+        paymentId,
+        ...details
+      }
+    );
+
+
+    throw error;
+
+  }
+
 }
 
 
@@ -156,36 +496,101 @@ async function createA2UPayment({
 }) {
 
   if (!uid) {
-    throw new Error("Vendor Pi UID is required");
+
+    throw new Error(
+      "Vendor Pi UID is required"
+    );
+
   }
 
-  if (!Number.isFinite(Number(amount)) || Number(amount) <= 0) {
-    throw new Error("Invalid A2U payment amount");
+
+  if (
+    !Number.isFinite(
+      Number(amount)
+    ) ||
+    Number(amount) <= 0
+  ) {
+
+    throw new Error(
+      "Invalid A2U payment amount"
+    );
+
   }
 
-  const response = await axios.post(
-    `${PI_BASE_URL}/payments`,
+
+  console.log(
+    "[PI SERVICE] Creating A2U payment:",
     {
-      payment: {
-        amount: Number(amount),
-        memo: String(memo || "Vendor marketplace earnings"),
-        metadata: metadata || {},
-        uid: String(uid)
-      }
-    },
-    {
-      headers: apiHeaders(),
-      timeout: 20000
+      uid,
+      amount:
+        Number(amount)
     }
   );
 
-  if (!response.data?.identifier) {
-    throw new Error(
-      "Pi did not return an A2U payment identifier"
+
+  try {
+
+    const response =
+      await axios.post(
+        `${PI_BASE_URL}/payments`,
+        {
+          payment: {
+            amount:
+              Number(amount),
+
+            memo:
+              String(
+                memo ||
+                "Vendor marketplace earnings"
+              ),
+
+            metadata:
+              metadata ||
+              {},
+
+            uid:
+              String(uid)
+          }
+        },
+        {
+          headers:
+            apiHeaders(),
+
+          timeout: 20000
+        }
+      );
+
+
+    if (
+      !response.data?.identifier
+    ) {
+
+      throw new Error(
+        "Pi did not return an A2U payment identifier"
+      );
+
+    }
+
+
+    return response.data;
+
+
+  } catch (error) {
+
+    const details =
+      getPiErrorDetails(error);
+
+
+    console.error(
+      "[PI SERVICE] A2U payment creation failed:",
+      details
     );
+
+
+    throw error;
+
   }
 
-  return response.data;
 }
 
 
@@ -195,18 +600,47 @@ async function createA2UPayment({
 
 async function getIncompleteServerPayments() {
 
-  const response = await axios.get(
-    `${PI_BASE_URL}/payments/incomplete_server_payments`,
-    {
-      headers: apiHeaders(),
-      timeout: 15000
-    }
+  console.log(
+    "[PI SERVICE] Fetching incomplete server payments..."
   );
 
-  return (
-    response.data?.incomplete_server_payments ||
-    []
-  );
+
+  try {
+
+    const response =
+      await axios.get(
+        `${PI_BASE_URL}/payments/incomplete_server_payments`,
+        {
+          headers:
+            apiHeaders(),
+
+          timeout: 15000
+        }
+      );
+
+
+    return (
+      response.data?.incomplete_server_payments ||
+      []
+    );
+
+
+  } catch (error) {
+
+    const details =
+      getPiErrorDetails(error);
+
+
+    console.error(
+      "[PI SERVICE] Failed to fetch incomplete server payments:",
+      details
+    );
+
+
+    throw error;
+
+  }
+
 }
 
 
@@ -217,16 +651,32 @@ async function getIncompleteServerPayments() {
 async function submitA2UPayment(paymentId) {
 
   if (!paymentId) {
-    throw new Error("A2U payment ID is required");
+
+    throw new Error(
+      "A2U payment ID is required"
+    );
+
   }
 
+
+  console.log(
+    "[PI SERVICE] Submitting A2U payment:",
+    paymentId
+  );
+
+
   const payment =
-    await fetchPayment(paymentId);
+    await fetchPayment(
+      paymentId
+    );
+
 
   if (!payment) {
+
     throw new Error(
       "Unable to retrieve A2U payment from Pi"
     );
+
   }
 
 
@@ -240,12 +690,25 @@ async function submitA2UPayment(paymentId) {
     payment.transaction_id ||
     null;
 
+
   if (existingTxid) {
+
+    console.log(
+      "[PI SERVICE] A2U payment already submitted:",
+      existingTxid
+    );
+
+
     return {
-      txid: existingTxid,
+      txid:
+        existingTxid,
+
       payment,
-      alreadySubmitted: true
+
+      alreadySubmitted:
+        true
     };
+
   }
 
 
@@ -256,31 +719,41 @@ async function submitA2UPayment(paymentId) {
     payment.to_address;
 
   const amount =
-    Number(payment.amount);
+    Number(
+      payment.amount
+    );
 
   const network =
     payment.network;
 
 
   if (!fromAddress) {
+
     throw new Error(
       "Pi A2U payment has no sender wallet address"
     );
+
   }
 
+
   if (!toAddress) {
+
     throw new Error(
       "Pi A2U payment has no recipient wallet address"
     );
+
   }
+
 
   if (
     !Number.isFinite(amount) ||
     amount <= 0
   ) {
+
     throw new Error(
       "Pi A2U payment has an invalid amount"
     );
+
   }
 
 
@@ -292,7 +765,11 @@ async function submitA2UPayment(paymentId) {
   let horizonUrl;
   let networkPassphrase;
 
-  if (network === "Pi Testnet") {
+
+  if (
+    network ===
+    "Pi Testnet"
+  ) {
 
     horizonUrl =
       "https://api.testnet.minepi.com";
@@ -300,7 +777,10 @@ async function submitA2UPayment(paymentId) {
     networkPassphrase =
       "Pi Testnet";
 
-  } else if (network === "Pi Network") {
+  } else if (
+    network ===
+    "Pi Network"
+  ) {
 
     horizonUrl =
       "https://api.mainnet.minepi.com";
@@ -313,16 +793,18 @@ async function submitA2UPayment(paymentId) {
     throw new Error(
       `Unsupported Pi network: ${network}`
     );
+
   }
 
 
   /*
-   * Load app wallet private seed.
+   * Load developer/app wallet private seed.
    * NEVER expose this to the browser.
    */
 
   const privateSeed =
     requirePrivateSeed();
+
 
   const keypair =
     StellarSdk.Keypair.fromSecret(
@@ -338,6 +820,7 @@ async function submitA2UPayment(paymentId) {
   const publicKey =
     keypair.publicKey();
 
+
   if (
     String(publicKey) !==
     String(fromAddress)
@@ -346,6 +829,7 @@ async function submitA2UPayment(paymentId) {
     throw new Error(
       "PI_WALLET_PRIVATE_SEED does not match the Pi app wallet"
     );
+
   }
 
 
@@ -379,9 +863,14 @@ async function submitA2UPayment(paymentId) {
 
   const paymentOperation =
     StellarSdk.Operation.payment({
-      destination: toAddress,
-      asset: StellarSdk.Asset.native(),
-      amount: amount.toString()
+      destination:
+        toAddress,
+
+      asset:
+        StellarSdk.Asset.native(),
+
+      amount:
+        amount.toString()
     });
 
 
@@ -397,13 +886,18 @@ async function submitA2UPayment(paymentId) {
     new StellarSdk.TransactionBuilder(
       account,
       {
-        fee: String(baseFee),
+        fee:
+          String(baseFee),
+
         networkPassphrase,
+
         timebounds:
           await server.fetchTimebounds(180)
       }
     )
-      .addOperation(paymentOperation)
+      .addOperation(
+        paymentOperation
+      )
       .addMemo(
         StellarSdk.Memo.text(
           payment.identifier
@@ -416,7 +910,9 @@ async function submitA2UPayment(paymentId) {
    * Sign using app wallet private seed.
    */
 
-  transaction.sign(keypair);
+  transaction.sign(
+    keypair
+  );
 
 
   /*
@@ -429,13 +925,18 @@ async function submitA2UPayment(paymentId) {
     );
 
 
-  if (!result?.successful) {
+  if (
+    !result?.successful
+  ) {
 
     const operationCode =
-      result?.extras?.result_codes?.operations?.[0];
+      result?.extras?.result_codes
+        ?.operations?.[0];
 
     const transactionCode =
-      result?.extras?.result_codes?.transaction;
+      result?.extras?.result_codes
+        ?.transaction;
+
 
     throw new Error(
       `Pi blockchain transaction failed: ${
@@ -444,6 +945,7 @@ async function submitA2UPayment(paymentId) {
         "unknown error"
       }`
     );
+
   }
 
 
@@ -452,17 +954,23 @@ async function submitA2UPayment(paymentId) {
 
 
   if (!txid) {
+
     throw new Error(
       "Pi blockchain did not return a transaction ID"
     );
+
   }
 
 
   return {
     txid,
+
     payment,
-    alreadySubmitted: false
+
+    alreadySubmitted:
+      false
   };
+
 }
 
 
