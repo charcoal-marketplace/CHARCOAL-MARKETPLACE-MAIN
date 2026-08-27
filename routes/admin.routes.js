@@ -2275,14 +2275,17 @@ router.get(
   }
 );
 
-/* =========================================================
+/* ==================================================
    RELEASE VENDOR EARNING
    POST /api/admin/earnings/:id/release
 
    NORMAL ADMIN + SUPER ADMIN CAN RELEASE
 
    MODERATOR CANNOT
-========================================================= */
+
+   IMPORTANT:
+   A2U payments are currently supported by Pi on Testnet.
+===================================================== */
 
 router.post(
   "/earnings/:id/release",
@@ -2293,7 +2296,11 @@ router.post(
       Number(req.params.id);
 
 
-    if (!Number.isInteger(earningId)) {
+    if (
+      !Number.isInteger(
+        earningId
+      )
+    ) {
 
       return res.status(400).json({
 
@@ -2307,30 +2314,78 @@ router.post(
     }
 
 
-    const connection =
-      await db.promise().getConnection();
-
+    let connection = null;
 
     let paymentId = null;
+
     let txid = null;
+
+    let lockAcquired = false;
+
+
+    /*
+     * MySQL named lock.
+     *
+     * This prevents two Admin requests
+     * from processing A2U payouts at the
+     * same time.
+     */
+
+    const A2U_LOCK_NAME =
+      "charcoal_marketplace_a2u_payout";
 
 
     try {
+
+      connection =
+        await db.promise()
+          .getConnection();
+
+
+      /* =====================================================
+         GLOBAL A2U PAYOUT LOCK
+      ===================================================== */
+
+      const [lockRows] =
+        await connection.query(
+          "SELECT GET_LOCK(?, 300) AS acquired",
+          [A2U_LOCK_NAME]
+        );
+
+
+      if (
+        !lockRows.length ||
+        Number(
+          lockRows[0].acquired
+        ) !== 1
+      ) {
+
+        return res.status(409).json({
+
+          success: false,
+
+          message:
+            "Another Pi vendor payout is currently being processed. Please try again shortly."
+
+        });
+
+      }
+
+
+      lockAcquired =
+        true;
+
+
+      /* =====================================================
+         START DATABASE TRANSACTION
+      ===================================================== */
+
       await connection.beginTransaction();
 
-      /*
-       * Make absolutely sure only actual
-       * administrators can release funds.
-       *
-       * Super Admin:
-       * allowed
-       *
-       * Normal Admin:
-       * allowed
-       *
-       * Moderator:
-       * denied
-       */
+
+      /* =====================================================
+         VERIFY ADMIN
+      ===================================================== */
 
       const [adminRows] =
         await connection.query(
@@ -2340,9 +2395,13 @@ router.post(
             role,
             status,
             admin_level
+
           FROM users
+
           WHERE id = ?
+
           LIMIT 1
+
           FOR UPDATE
           `,
           [req.user.id]
@@ -2407,47 +2466,64 @@ router.post(
       }
 
 
-      /*
-       * Lock the earning row.
-       */
-
+      /* =====================================================
+         LOCK EARNING
+      ===================================================== */
 
       const [earningRows] =
-  await connection.query(
-    `
-    SELECT
-      e.*,
+        await connection.query(
+          `
+          SELECT
 
-      o.status AS order_status,
-      o.payment_status AS order_payment_status,
-      o.delivery_status AS order_delivery_status,
-      o.buyer_confirmed_at,
+            e.*,
 
-      u.name AS vendor_name,
-      u.email AS vendor_email,
-      u.pi_uid,
-      u.pi_username,
-      u.role AS vendor_role,
-      u.status AS vendor_status,
-      u.vendor_status,
-      u.pi_wallet_address
+            o.status
+              AS order_status,
 
-    FROM earnings e
+            o.payment_status
+              AS order_payment_status,
 
-    INNER JOIN users u
-      ON e.vendor_id = u.id
+            o.delivery_status
+              AS order_delivery_status,
 
-    LEFT JOIN orders o
-      ON e.order_id = o.id
+            o.buyer_confirmed_at,
 
-    WHERE e.id = ?
+            u.name
+              AS vendor_name,
 
-    LIMIT 1
+            u.email
+              AS vendor_email,
 
-    FOR UPDATE
-    `,
-    [earningId]
-  );
+            u.pi_uid,
+
+            u.pi_username,
+
+            u.role
+              AS vendor_role,
+
+            u.status
+              AS vendor_account_status,
+
+            u.vendor_status,
+
+            u.pi_wallet_address
+
+          FROM earnings e
+
+          INNER JOIN users u
+            ON e.vendor_id = u.id
+
+          LEFT JOIN orders o
+            ON e.order_id = o.id
+
+          WHERE e.id = ?
+
+          LIMIT 1
+
+          FOR UPDATE
+          `,
+          [earningId]
+        );
 
 
       if (!earningRows.length) {
@@ -2469,44 +2545,10 @@ router.post(
       const earning =
         earningRows[0];
 
-      /*
- * =====================================================
- * BUYER RECEIPT CONFIRMATION
- * =====================================================
- *
- * Vendor earnings cannot be released until the
- * buyer has confirmed that the product was received.
- */
 
-if (!earning.buyer_confirmed_at) {
-
-  await connection.rollback();
-
-  return res.status(409).json({
-
-    success: false,
-
-    message:
-      "Vendor payout is locked until the buyer confirms receipt of the product.",
-
-    earning_id:
-      earning.id,
-
-    order_id:
-      earning.order_id,
-
-    payout_status:
-      "awaiting_buyer_confirmation"
-
-  });
-
-}
-      
-
-      /*
-       * Never pay something that is
-       * already marked as paid.
-       */
+      /* =====================================================
+         ALREADY PAID
+      ===================================================== */
 
       if (
         earning.status === "paid"
@@ -2522,17 +2564,17 @@ if (!earning.buyer_confirmed_at) {
             "This earning has already been paid",
 
           payout_txid:
-            earning.payout_txid || null
+            earning.payout_txid ||
+            null
 
         });
 
       }
 
 
-      /*
-       * Only sale earnings are released
-       * to vendors.
-       */
+      /* =====================================================
+         ONLY SALE EARNINGS
+      ===================================================== */
 
       if (
         earning.type !== "sale"
@@ -2552,10 +2594,40 @@ if (!earning.buyer_confirmed_at) {
       }
 
 
-      /*
-       * Vendor must have an authenticated
-       * Pi UID.
-       */
+      /* =====================================================
+         BUYER RECEIPT CONFIRMATION
+      ===================================================== */
+
+      if (
+        !earning.buyer_confirmed_at
+      ) {
+
+        await connection.rollback();
+
+        return res.status(409).json({
+
+          success: false,
+
+          message:
+            "Vendor payout is locked until the buyer confirms receipt of the product.",
+
+          earning_id:
+            earning.id,
+
+          order_id:
+            earning.order_id,
+
+          payout_status:
+            "awaiting_buyer_confirmation"
+
+        });
+
+      }
+
+
+      /* =====================================================
+         VENDOR PI UID
+      ===================================================== */
 
       if (
         !earning.pi_uid
@@ -2575,13 +2647,19 @@ if (!earning.buyer_confirmed_at) {
       }
 
 
-      /*
-       * Vendor must still be an approved vendor.
-       */
+      /* =====================================================
+         VENDOR STATUS
+      ===================================================== */
 
       if (
-        earning.vendor_role !== "vendor" ||
-        earning.vendor_status !== "approved" 
+        earning.vendor_role !==
+          "vendor" ||
+
+        earning.vendor_account_status !==
+          "approved" ||
+
+        earning.vendor_status !==
+          "approved"
       ) {
 
         await connection.rollback();
@@ -2598,12 +2676,20 @@ if (!earning.buyer_confirmed_at) {
       }
 
 
+      /* =====================================================
+         AMOUNT
+      ===================================================== */
+
       const amount =
-        Number(earning.amount_pi);
+        Number(
+          earning.amount_pi
+        );
 
 
       if (
-        !Number.isFinite(amount) ||
+        !Number.isFinite(
+          amount
+        ) ||
         amount <= 0
       ) {
 
@@ -2622,28 +2708,28 @@ if (!earning.buyer_confirmed_at) {
 
 
       /*
-       * Prevent a second payout if an
-       * earlier A2U payment already exists.
+       * If an A2U payment already exists,
+       * NEVER create another one.
        */
 
-      if (
-        earning.payout_payment_id
-      ) {
+      paymentId =
+        earning.payout_payment_id ||
+        null;
 
-        paymentId =
-          earning.payout_payment_id;
 
-      }
-
+      /*
+       * We can now release the DB transaction.
+       *
+       * The GLOBAL MySQL named lock remains active
+       * during the external Pi operation.
+       */
 
       await connection.commit();
 
 
-      /*
-       * =====================================================
-       * A2U PAYMENT CREATION
-       * =====================================================
-       */
+      /* =====================================================
+         CREATE A2U PAYMENT
+      ===================================================== */
 
       if (!paymentId) {
 
@@ -2681,75 +2767,118 @@ if (!earning.buyer_confirmed_at) {
           payment.identifier;
 
 
+        if (!paymentId) {
+
+          throw new Error(
+            "Pi did not return an A2U payment identifier"
+          );
+
+        }
+
+
         /*
-         * Store payment ID immediately.
+         * Save payment ID immediately.
          *
-         * This is critical for preventing
-         * accidental double payment.
+         * The named lock prevents another
+         * payout request from creating another
+         * payment while this request is running.
          */
 
-        await db.promise().query(
-          `
-          UPDATE earnings
+        const [paymentUpdate] =
+          await db.promise().query(
+            `
+            UPDATE earnings
 
-          SET
-            payout_payment_id = ?,
-            payout_error = NULL
+            SET
+              payout_payment_id = ?,
+              payout_error = NULL
 
-          WHERE id = ?
-            AND status = 'pending'
-          `,
-          [
-            paymentId,
-            earning.id
-          ]
+            WHERE id = ?
+
+              AND status = 'pending'
+
+              AND (
+                payout_payment_id IS NULL
+                OR payout_payment_id = ?
+              )
+            `,
+            [
+              paymentId,
+              earning.id,
+              paymentId
+            ]
+          );
+
+
+        if (
+          !paymentUpdate.affectedRows
+        ) {
+
+          throw new Error(
+            "Unable to safely store A2U payment identifier"
+          );
+
+        }
+
+      }
+
+
+      /* =====================================================
+         FETCH A2U PAYMENT
+      ===================================================== */
+
+      const currentPayment =
+        await fetchPayment(
+          paymentId
+        );
+
+
+      if (!currentPayment) {
+
+        throw new Error(
+          "Unable to retrieve A2U payment from Pi"
         );
 
       }
 
 
-      /*
- * =====================================================
- * APPROVE A2U PAYMENT
- * =====================================================
- */
+      /* =====================================================
+         VERIFY PAYMENT DIRECTION
+      ===================================================== */
 
-const currentPayment =
-  await fetchPayment(
-    paymentId
-  );
+      if (
+        currentPayment.direction &&
+        currentPayment.direction !==
+          "app_to_user"
+      ) {
 
+        throw new Error(
+          `Payment ${paymentId} is not an App-To-User payment`
+        );
 
-if (!currentPayment) {
-
-  throw new Error(
-    "Unable to retrieve A2U payment before approval"
-  );
-
-}
+      }
 
 
-/*
- * Do not approve again if Pi
- * already shows developer approval.
- */
+      /* =====================================================
+         VERIFY PAYMENT IDENTIFIER
+      ===================================================== */
 
-if (
-  currentPayment.status ||
-  currentPayment.status.developer_approved !== true
-) {
+      if (
+        currentPayment.identifier &&
+        currentPayment.identifier !==
+          paymentId
+      ) {
 
-  await approvePayment(
-    paymentId
-  );
+        throw new Error(
+          "Pi returned a different payment identifier"
+        );
 
-}
-      
-      /*
-       * =====================================================
-       * SUBMIT TO PI BLOCKCHAIN
-       * =====================================================
-       */
+      }
+
+
+      /* =====================================================
+         SUBMIT TO PI BLOCKCHAIN
+      ===================================================== */
 
       const submission =
         await submitA2UPayment(
@@ -2761,9 +2890,18 @@ if (
         submission.txid;
 
 
-      /*
-       * Store TXID immediately.
-       */
+      if (!txid) {
+
+        throw new Error(
+          "Pi blockchain submission did not return a transaction ID"
+        );
+
+      }
+
+
+      /* =====================================================
+         SAVE TXID
+      ===================================================== */
 
       await db.promise().query(
         `
@@ -2774,6 +2912,8 @@ if (
           payout_error = NULL
 
         WHERE id = ?
+
+          AND status = 'pending'
         `,
         [
           txid,
@@ -2782,11 +2922,9 @@ if (
       );
 
 
-      /*
-       * =====================================================
-       * COMPLETE PAYMENT WITH PI
-       * =====================================================
-       */
+      /* =====================================================
+         COMPLETE PAYMENT
+      ===================================================== */
 
       const completedPayment =
         await completePayment(
@@ -2796,7 +2934,7 @@ if (
 
 
       /*
-       * Verify completion.
+       * Re-fetch from Pi after completion.
        */
 
       const confirmed =
@@ -2809,7 +2947,9 @@ if (
         completedPayment &&
         confirmed &&
         confirmed.status &&
-        confirmed.status.developer_completed === true;
+        confirmed.status
+          .developer_completed ===
+            true;
 
 
       if (!completed) {
@@ -2822,6 +2962,8 @@ if (
             payout_error = ?
 
           WHERE id = ?
+
+            AND status = 'pending'
           `,
           [
             "Pi payment was submitted but has not yet been confirmed as completed.",
@@ -2853,11 +2995,9 @@ if (
       }
 
 
-      /*
-       * =====================================================
-       * MARK EARNING AS PAID
-       * =====================================================
-       */
+      /* =====================================================
+         MARK EARNING PAID
+      ===================================================== */
 
       const [paidResult] =
         await db.promise().query(
@@ -2865,13 +3005,24 @@ if (
           UPDATE earnings
 
           SET
-            status = 'paid',
-            payout_payment_id = ?,
-            payout_txid = ?,
-            paid_at = CURRENT_TIMESTAMP,
-            payout_error = NULL
+
+            status =
+              'paid',
+
+            payout_payment_id =
+              ?,
+
+            payout_txid =
+              ?,
+
+            paid_at =
+              CURRENT_TIMESTAMP,
+
+            payout_error =
+              NULL
 
           WHERE id = ?
+
             AND status = 'pending'
           `,
           [
@@ -2903,9 +3054,9 @@ if (
       }
 
 
-      /*
-       * Notify vendor.
-       */
+      /* =====================================================
+         NOTIFY VENDOR
+      ===================================================== */
 
       await db.promise().query(
         `
@@ -2915,19 +3066,22 @@ if (
           message,
           type
         )
+
         VALUES (?, ?, ?)
         `,
         [
+
           earning.vendor_id,
 
           `Your vendor earning of ${amount} Pi has been released successfully. Transaction: ${txid}`,
 
           "earning"
+
         ]
       );
 
 
-      res.json({
+      return res.json({
 
         success: true,
 
@@ -2965,8 +3119,9 @@ if (
 
 
       /*
-       * Save the error without
-       * falsely marking the earning as paid.
+       * Never mark the earning paid
+       * merely because the blockchain
+       * submission was attempted.
        */
 
       try {
@@ -2979,16 +3134,22 @@ if (
             payout_error = ?
 
           WHERE id = ?
+
             AND status = 'pending'
           `,
           [
+
             JSON.stringify(
               error.response?.data ||
               error.message ||
               "Unknown payout error"
-            ).slice(0, 2000),
+            ).slice(
+              0,
+              2000
+            ),
 
             earningId
+
           ]
         );
 
@@ -3019,9 +3180,42 @@ if (
 
       });
 
+
     } finally {
 
-      connection.release();
+      /*
+       * Release MySQL named lock.
+       */
+
+      if (
+        connection &&
+        lockAcquired
+      ) {
+
+        try {
+
+          await connection.query(
+            "SELECT RELEASE_LOCK(?)",
+            [A2U_LOCK_NAME]
+          );
+
+        } catch (lockError) {
+
+          console.error(
+            "Failed to release A2U payout lock:",
+            lockError
+          );
+
+        }
+
+      }
+
+
+      if (connection) {
+
+        connection.release();
+
+      }
 
     }
 
