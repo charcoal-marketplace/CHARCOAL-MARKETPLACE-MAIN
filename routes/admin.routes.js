@@ -2316,6 +2316,7 @@ router.post(
 
 
     try {
+      await connection.beginTransaction();
 
       /*
        * Make absolutely sure only actual
@@ -2409,8 +2410,6 @@ router.post(
       /*
        * Lock the earning row.
        */
-
-      await connection.beginTransaction();
 
 
       const [earningRows] =
@@ -2582,8 +2581,7 @@ if (!earning.buyer_confirmed_at) {
 
       if (
         earning.vendor_role !== "vendor" ||
-        earning.vendor_status !== "approved" ||
-        earning.vendor_status === "rejected"
+        earning.vendor_status !== "approved" 
       ) {
 
         await connection.rollback();
@@ -2737,7 +2735,7 @@ if (!currentPayment) {
  */
 
 if (
-  currentPayment.status &&
+  currentPayment.status ||
   currentPayment.status.developer_approved !== true
 ) {
 
