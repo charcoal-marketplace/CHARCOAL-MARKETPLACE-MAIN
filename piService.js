@@ -1,7 +1,12 @@
-const axios = require("axios");
-const StellarSdk = require("@stellar/stellar-sdk");
+const axios =
+  require("axios");
 
-const PI_BASE_URL = "https://api.minepi.com/v2";
+const StellarSdk =
+  require("@stellar/stellar-sdk");
+
+
+const PI_BASE_URL =
+  "https://api.minepi.com/v2";
 
 
 /* =========================================================
@@ -11,28 +16,45 @@ const PI_BASE_URL = "https://api.minepi.com/v2";
 function requireApiKey() {
 
   if (!process.env.PI_API_KEY) {
-    throw new Error("PI_API_KEY is missing");
+
+    throw new Error(
+      "PI_API_KEY is missing"
+    );
+
   }
 
   return process.env.PI_API_KEY;
+
 }
 
 
 function requirePrivateSeed() {
 
-  if (!process.env.PI_WALLET_PRIVATE_SEED) {
-    throw new Error("PI_WALLET_PRIVATE_SEED is missing");
+  if (
+    !process.env.PI_WALLET_PRIVATE_SEED
+  ) {
+
+    throw new Error(
+      "PI_WALLET_PRIVATE_SEED is missing"
+    );
+
   }
 
   return process.env.PI_WALLET_PRIVATE_SEED;
+
 }
 
 
 function apiHeaders() {
 
   return {
-    Authorization: `Key ${requireApiKey()}`,
-    "Content-Type": "application/json"
+
+    Authorization:
+      `Key ${requireApiKey()}`,
+
+    "Content-Type":
+      "application/json"
+
   };
 
 }
@@ -42,11 +64,18 @@ function apiHeaders() {
    PI USER
 ========================================================= */
 
-async function getPiUser(accessToken) {
+async function getPiUser(
+  accessToken
+) {
 
   if (!accessToken) {
-    throw new Error("Pi access token is required");
+
+    throw new Error(
+      "Pi access token is required"
+    );
+
   }
+
 
   console.log(
     "[PI SERVICE] Verifying Pi user..."
@@ -57,12 +86,17 @@ async function getPiUser(accessToken) {
     await axios.get(
       `${PI_BASE_URL}/me`,
       {
+
         headers: {
+
           Authorization:
             `Bearer ${accessToken}`
+
         },
 
-        timeout: 10000
+        timeout:
+          10000
+
       }
     );
 
@@ -97,10 +131,14 @@ async function getPiUser(accessToken) {
    GET PAYMENT
 ========================================================= */
 
-async function fetchPayment(paymentId) {
+async function fetchPayment(
+  paymentId
+) {
 
   if (!paymentId) {
+
     return null;
+
   }
 
 
@@ -116,11 +154,13 @@ async function fetchPayment(paymentId) {
       await axios.get(
         `${PI_BASE_URL}/payments/${paymentId}`,
         {
+
           headers:
             apiHeaders(),
 
           timeout:
             15000
+
         }
       );
 
@@ -138,6 +178,9 @@ async function fetchPayment(paymentId) {
           paymentId:
             payment.identifier,
 
+          direction:
+            payment.direction,
+
           status:
             payment.status,
 
@@ -150,7 +193,6 @@ async function fetchPayment(paymentId) {
 
 
     return payment;
-
 
   } catch (error) {
 
@@ -172,17 +214,21 @@ async function fetchPayment(paymentId) {
    APPROVE U2A PAYMENT
 ========================================================= */
 
-async function approvePayment(paymentId) {
+async function approvePayment(
+  paymentId
+) {
 
   if (!paymentId) {
+
     throw new Error(
       "Pi payment ID is required"
     );
+
   }
 
 
   console.log(
-    "[PI SERVICE] Approving payment:",
+    "[PI SERVICE] Approving U2A payment:",
     paymentId
   );
 
@@ -192,27 +238,21 @@ async function approvePayment(paymentId) {
       `${PI_BASE_URL}/payments/${paymentId}/approve`,
       {},
       {
+
         headers:
           apiHeaders(),
 
         timeout:
           15000
+
       }
     );
 
 
-  const result =
+  return (
     response.data ||
-    null;
-
-
-  console.log(
-    "[PI SERVICE] Pi payment approval response:",
-    result
+    null
   );
-
-
-  return result;
 
 }
 
@@ -260,27 +300,21 @@ async function completePayment(
         txid
       },
       {
+
         headers:
           apiHeaders(),
 
         timeout:
           20000
+
       }
     );
 
 
-  const result =
+  return (
     response.data ||
-    null;
-
-
-  console.log(
-    "[PI SERVICE] Pi payment completion response:",
-    result
+    null
   );
-
-
-  return result;
 
 }
 
@@ -289,7 +323,9 @@ async function completePayment(
    CANCEL PAYMENT
 ========================================================= */
 
-async function cancelPayment(paymentId) {
+async function cancelPayment(
+  paymentId
+) {
 
   if (!paymentId) {
 
@@ -300,38 +336,26 @@ async function cancelPayment(paymentId) {
   }
 
 
-  console.log(
-    "[PI SERVICE] Cancelling payment:",
-    paymentId
-  );
-
-
   const response =
     await axios.post(
       `${PI_BASE_URL}/payments/${paymentId}/cancel`,
       {},
       {
+
         headers:
           apiHeaders(),
 
         timeout:
           15000
+
       }
     );
 
 
-  const result =
+  return (
     response.data ||
-    null;
-
-
-  console.log(
-    "[PI SERVICE] Pi payment cancellation response:",
-    result
+    null
   );
-
-
-  return result;
 
 }
 
@@ -356,11 +380,15 @@ async function createA2UPayment({
   }
 
 
+  const numericAmount =
+    Number(amount);
+
+
   if (
     !Number.isFinite(
-      Number(amount)
+      numericAmount
     ) ||
-    Number(amount) <= 0
+    numericAmount <= 0
   ) {
 
     throw new Error(
@@ -374,9 +402,11 @@ async function createA2UPayment({
     await axios.post(
       `${PI_BASE_URL}/payments`,
       {
+
         payment: {
+
           amount:
-            Number(amount),
+            numericAmount,
 
           memo:
             String(
@@ -390,19 +420,25 @@ async function createA2UPayment({
 
           uid:
             String(uid)
+
         }
+
       },
       {
+
         headers:
           apiHeaders(),
 
         timeout:
           20000
+
       }
     );
 
 
-  if (!response.data?.identifier) {
+  if (
+    !response.data?.identifier
+  ) {
 
     throw new Error(
       "Pi did not return an A2U payment identifier"
@@ -417,7 +453,8 @@ async function createA2UPayment({
 
 
 /* =========================================================
-   A2U: GET INCOMPLETE SERVER PAYMENTS
+   A2U:
+   GET INCOMPLETE SERVER PAYMENTS
 ========================================================= */
 
 async function getIncompleteServerPayments() {
@@ -426,17 +463,20 @@ async function getIncompleteServerPayments() {
     await axios.get(
       `${PI_BASE_URL}/payments/incomplete_server_payments`,
       {
+
         headers:
           apiHeaders(),
 
         timeout:
           15000
+
       }
     );
 
 
   return (
-    response.data?.incomplete_server_payments ||
+    response.data
+      ?.incomplete_server_payments ||
     []
   );
 
@@ -444,10 +484,13 @@ async function getIncompleteServerPayments() {
 
 
 /* =========================================================
-   A2U: SUBMIT PAYMENT TO PI BLOCKCHAIN
+   A2U:
+   SUBMIT PAYMENT TO PI BLOCKCHAIN
 ========================================================= */
 
-async function submitA2UPayment(paymentId) {
+async function submitA2UPayment(
+  paymentId
+) {
 
   if (!paymentId) {
 
@@ -474,8 +517,26 @@ async function submitA2UPayment(paymentId) {
 
 
   /*
+   * Make sure this is actually
+   * an App-To-User payment.
+   */
+
+  if (
+    payment.direction &&
+    payment.direction !==
+      "app_to_user"
+  ) {
+
+    throw new Error(
+      `Invalid A2U payment direction: ${payment.direction}`
+    );
+
+  }
+
+
+  /*
    * If Pi already has a transaction,
-   * do not create another one.
+   * never create another transaction.
    */
 
   const existingTxid =
@@ -487,6 +548,7 @@ async function submitA2UPayment(paymentId) {
   if (existingTxid) {
 
     return {
+
       txid:
         existingTxid,
 
@@ -494,6 +556,7 @@ async function submitA2UPayment(paymentId) {
 
       alreadySubmitted:
         true
+
     };
 
   }
@@ -548,8 +611,13 @@ async function submitA2UPayment(paymentId) {
 
 
   /*
-   * The Pi API tells us which network
-   * the payment belongs to.
+   * A2U is currently supported
+   * by Pi on Testnet.
+   *
+   * We nevertheless keep the network
+   * validation explicit so the app does
+   * not accidentally submit a transaction
+   * against the wrong Horizon network.
    */
 
   let horizonUrl;
@@ -567,18 +635,23 @@ async function submitA2UPayment(paymentId) {
     networkPassphrase =
       "Pi Testnet";
 
-
   } else if (
     network ===
     "Pi Network"
   ) {
+
+    /*
+     * Keep this branch for compatibility
+     * with Pi network responses, but note
+     * that Pi's current Advanced Payments
+     * documentation says A2U is Testnet-only.
+     */
 
     horizonUrl =
       "https://api.mainnet.minepi.com";
 
     networkPassphrase =
       "Pi Network";
-
 
   } else {
 
@@ -590,8 +663,7 @@ async function submitA2UPayment(paymentId) {
 
 
   /*
-   * Load developer/app wallet private seed.
-   * NEVER expose this to the browser.
+   * NEVER expose this seed to frontend code.
    */
 
   const privateSeed =
@@ -605,8 +677,9 @@ async function submitA2UPayment(paymentId) {
 
 
   /*
-   * Make sure the private seed belongs
-   * to the sender address supplied by Pi.
+   * Verify that the configured app wallet
+   * actually owns the sender address returned
+   * by Pi.
    */
 
   const publicKey =
@@ -632,7 +705,7 @@ async function submitA2UPayment(paymentId) {
 
 
   /*
-   * Load developer/app wallet account.
+   * Load the app wallet account.
    */
 
   const account =
@@ -642,7 +715,7 @@ async function submitA2UPayment(paymentId) {
 
 
   /*
-   * Get current base fee.
+   * Current base fee.
    */
 
   const baseFee =
@@ -650,11 +723,12 @@ async function submitA2UPayment(paymentId) {
 
 
   /*
-   * Build native Pi payment.
+   * Native Pi payment.
    */
 
   const paymentOperation =
     StellarSdk.Operation.payment({
+
       destination:
         toAddress,
 
@@ -663,21 +737,24 @@ async function submitA2UPayment(paymentId) {
 
       amount:
         amount.toString()
+
     });
 
 
   /*
    * Build transaction.
    *
-   * IMPORTANT:
-   * Pi payment identifier is included
-   * as transaction memo.
+   * The Pi payment identifier is stored
+   * in the transaction memo so the blockchain
+   * transaction can be associated with the
+   * Pi payment.
    */
 
   const transaction =
     new StellarSdk.TransactionBuilder(
       account,
       {
+
         fee:
           String(baseFee),
 
@@ -687,21 +764,25 @@ async function submitA2UPayment(paymentId) {
           await server.fetchTimebounds(
             180
           )
+
       }
     )
+
       .addOperation(
         paymentOperation
       )
+
       .addMemo(
         StellarSdk.Memo.text(
           payment.identifier
         )
       )
+
       .build();
 
 
   /*
-   * Sign using app wallet private seed.
+   * Sign with the app wallet.
    */
 
   transaction.sign(
@@ -760,12 +841,14 @@ async function submitA2UPayment(paymentId) {
 
 
   return {
+
     txid,
 
     payment,
 
     alreadySubmitted:
       false
+
   };
 
 }
