@@ -8,10 +8,16 @@ const db = require("../config/db");
    CONFIGURATION
 ========================================================= */
 
-const SECRET = process.env.JWT_SECRET;
+const SECRET =
+  process.env.JWT_SECRET;
+
 
 if (!SECRET) {
-  throw new Error("JWT_SECRET is required");
+
+  throw new Error(
+    "JWT_SECRET is required"
+  );
+
 }
 
 
@@ -41,23 +47,33 @@ function createToken(user) {
   return jwt.sign(
 
     {
-      id: user.id,
 
-      email: user.email,
+      id:
+        user.id,
 
-      role: user.role,
+      email:
+        user.email,
+
+      role:
+        user.role,
 
       admin_level:
-        user.admin_level || "none",
+        user.admin_level ||
+        "none",
 
       pi_uid:
-        user.pi_uid || null
+        user.pi_uid ||
+        null
+
     },
 
     SECRET,
 
     {
-      expiresIn: "1d"
+
+      expiresIn:
+        "1d"
+
     }
 
   );
@@ -73,49 +89,90 @@ function publicUser(user) {
 
   return {
 
-    id: user.id,
+    id:
+      user.id,
 
-    name: user.name,
+    name:
+      user.name,
 
-    email: user.email,
+    email:
+      user.email,
 
-    role: user.role,
+    role:
+      user.role,
 
-    status: user.status,
+    status:
+      user.status,
 
     pi_uid:
-      user.pi_uid || null,
+      user.pi_uid ||
+      null,
 
     pi_username:
-      user.pi_username || null,
+      user.pi_username ||
+      null,
 
     /*
-     * Vendor receiving wallet.
-     * This is PUBLIC wallet information.
-     * NEVER put the private seed here.
+     * Public receiving wallet address.
+     *
+     * This field may be null when Pi does not return
+     * the wallet address through /me.
+     *
+     * A2U payout uses the verified Pi UID so Pi can
+     * resolve the user's current wallet.
      */
     pi_wallet_address:
-      user.pi_wallet_address || null,
+      user.pi_wallet_address ||
+      null,
 
     admin_level:
-      user.admin_level || "none",
+      user.admin_level ||
+      "none",
 
     vendor_status:
-      user.vendor_status || "none",
+      user.vendor_status ||
+      "none",
 
     business_name:
-      user.business_name || null,
+      user.business_name ||
+      null,
 
     business_phone:
-      user.business_phone || null,
+      user.business_phone ||
+      null,
 
     business_location:
-      user.business_location || null,
+      user.business_location ||
+      null,
 
     business_description:
-      user.business_description || null
+      user.business_description ||
+      null
 
   };
+
+}
+
+
+/* =========================================================
+   CHECK PI SCOPE
+========================================================= */
+
+function hasPiScope(
+  piUser,
+  scope
+) {
+
+  const scopes =
+    piUser
+      ?.credentials
+      ?.scopes;
+
+
+  return (
+    Array.isArray(scopes) &&
+    scopes.includes(scope)
+  );
 
 }
 
@@ -124,7 +181,9 @@ function publicUser(user) {
    VERIFY PI ACCOUNT
 ========================================================= */
 
-async function verifyPiAccount(accessToken) {
+async function verifyPiAccount(
+  accessToken
+) {
 
   if (!accessToken) {
 
@@ -133,6 +192,11 @@ async function verifyPiAccount(accessToken) {
     );
 
   }
+
+
+  console.log(
+    "[PI AUTH] Verifying Pi access token..."
+  );
 
 
   const response =
@@ -147,13 +211,18 @@ async function verifyPiAccount(accessToken) {
 
         },
 
-        timeout: 10000
+        timeout:
+          10000
 
       }
     );
 
 
-  if (!response.data?.uid) {
+  const piUser =
+    response.data;
+
+
+  if (!piUser?.uid) {
 
     throw new Error(
       "Invalid Pi account"
@@ -162,7 +231,66 @@ async function verifyPiAccount(accessToken) {
   }
 
 
-  return response.data;
+  console.log(
+    "[PI AUTH] Pi account verified:",
+    {
+
+      uid:
+        piUser.uid,
+
+      username:
+        piUser.username ||
+        null,
+
+      scopes:
+        piUser.credentials
+          ?.scopes ||
+        []
+
+    }
+  );
+
+
+  return piUser;
+
+}
+
+
+/* =========================================================
+   REQUIRE WALLET ADDRESS SCOPE
+========================================================= */
+
+function requireWalletScope(
+  piUser
+) {
+
+  if (
+    hasPiScope(
+      piUser,
+      "wallet_address"
+    )
+  ) {
+
+    return true;
+
+  }
+
+
+  const error =
+    new Error(
+      "Pi wallet permission is required. Please authenticate again and authorize the wallet_address permission."
+    );
+
+
+  error.code =
+    "PI_WALLET_SCOPE_REQUIRED";
+
+
+  error.status =
+    403;
+
+
+  throw error;
 
 }
 
@@ -187,9 +315,7 @@ router.post(
 
       business_location,
 
-      business_description,
-
-      pi_wallet_address
+      business_description
 
     } = req.body || {};
 
@@ -199,15 +325,18 @@ router.post(
     ===================================================== */
 
     if (
+
       !accessToken ||
       !name ||
       !business_name ||
       !business_location
+
     ) {
 
       return res.status(400).json({
 
-        success: false,
+        success:
+          false,
 
         message:
           "Pi authentication, name, business name and business location are required"
@@ -215,36 +344,6 @@ router.post(
       });
 
     }
-
-
-    /*
-     * Wallet address is required for vendor payout.
-     *
-     * We do not validate the wallet by attempting
-     * to access or spend from it.
-     *
-     * It is only stored as the vendor's receiving address.
-     */
-
-    if (
-      !pi_wallet_address ||
-      !String(pi_wallet_address).trim()
-    ) {
-
-      return res.status(400).json({
-
-        success: false,
-
-        message:
-          "Pi wallet address is required for vendor payments"
-
-      });
-
-    }
-
-
-    const walletAddress =
-      String(pi_wallet_address).trim();
 
 
     try {
@@ -259,6 +358,17 @@ router.post(
         );
 
 
+      /*
+       * Vendor accounts need wallet_address permission
+       * because the marketplace will eventually send
+       * vendor earnings through Pi A2U.
+       */
+
+      requireWalletScope(
+        piUser
+      );
+
+
       const uid =
         piUser.uid;
 
@@ -270,6 +380,21 @@ router.post(
 
       const email =
         `${uid}@pi.app`;
+
+
+      /*
+       * If Pi happens to return a wallet address through
+       * the verified /me response, keep it.
+       *
+       * Otherwise leave it NULL.
+       *
+       * We NEVER trust a wallet address supplied manually
+       * by the browser.
+       */
+
+      const walletAddress =
+        piUser.wallet_address ||
+        null;
 
 
       /* ===================================================
@@ -293,7 +418,8 @@ router.post(
 
             return res.status(500).json({
 
-              success: false,
+              success:
+                false,
 
               message:
                 "Database error"
@@ -389,7 +515,8 @@ router.post(
 
                   return res.status(500).json({
 
-                    success: false,
+                    success:
+                      false,
 
                     message:
                       "Failed to submit vendor application"
@@ -401,7 +528,8 @@ router.post(
 
                 return res.status(201).json({
 
-                  success: true,
+                  success:
+                    true,
 
                   message:
                     "Vendor application submitted. Wait for Admin approval.",
@@ -439,7 +567,8 @@ router.post(
 
             return res.status(403).json({
 
-              success: false,
+              success:
+                false,
 
               message:
                 "Administrator accounts cannot register as vendors"
@@ -454,13 +583,16 @@ router.post(
           =============================================== */
 
           if (
+
             user.role === "vendor" &&
             user.vendor_status === "approved"
+
           ) {
 
             return res.status(409).json({
 
-              success: false,
+              success:
+                false,
 
               message:
                 "This Pi account is already an approved vendor"
@@ -475,12 +607,14 @@ router.post(
           =============================================== */
 
           if (
-            user.vendor_status === "pending"
+            user.vendor_status ===
+            "pending"
           ) {
 
             return res.status(409).json({
 
-              success: false,
+              success:
+                false,
 
               message:
                 "Vendor application is already pending"
@@ -500,6 +634,10 @@ router.post(
 
               vendor_status='pending',
 
+              pi_username=?,
+
+              pi_wallet_address=?,
+
               business_name=?,
 
               business_phone=?,
@@ -507,8 +645,6 @@ router.post(
               business_location=?,
 
               business_description=?,
-
-              pi_wallet_address=?,
 
               vendor_applied_at=CURRENT_TIMESTAMP,
 
@@ -522,6 +658,10 @@ router.post(
 
             [
 
+              username,
+
+              walletAddress,
+
               business_name.trim(),
 
               business_phone?.trim() ||
@@ -531,8 +671,6 @@ router.post(
 
               business_description?.trim() ||
                 null,
-
-              walletAddress,
 
               user.id
 
@@ -549,7 +687,8 @@ router.post(
 
                 return res.status(500).json({
 
-                  success: false,
+                  success:
+                    false,
 
                   message:
                     "Failed to submit vendor application"
@@ -561,7 +700,8 @@ router.post(
 
               return res.json({
 
-                success: true,
+                success:
+                  true,
 
                 message:
                   "Vendor application submitted. Wait for Admin approval.",
@@ -591,9 +731,31 @@ router.post(
       );
 
 
+      if (
+        error.code ===
+        "PI_WALLET_SCOPE_REQUIRED"
+      ) {
+
+        return res.status(403).json({
+
+          success:
+            false,
+
+          code:
+            "PI_WALLET_SCOPE_REQUIRED",
+
+          message:
+            "Pi wallet permission is required. Please authenticate again and authorize the wallet_address permission in Pi Browser."
+
+        });
+
+      }
+
+
       return res.status(401).json({
 
-        success: false,
+        success:
+          false,
 
         message:
           "Pi authentication failed"
@@ -661,7 +823,8 @@ router.post(
 
             return res.status(500).json({
 
-              success: false,
+              success:
+                false,
 
               message:
                 "Database error"
@@ -686,14 +849,17 @@ router.post(
             ============================================= */
 
             if (
-              user.status !== "approved"
+              user.status !==
+              "approved"
             ) {
 
               return res.status(403).json({
 
-                success: false,
+                success:
+                  false,
 
                 message:
+
                   user.vendor_status ===
                   "pending"
 
@@ -706,21 +872,98 @@ router.post(
             }
 
 
+            /*
+             * If this is an approved vendor, make sure
+             * the wallet_address permission is present.
+             *
+             * This prevents the vendor from reaching the
+             * payout stage with a token that Pi will reject.
+             */
+
+            if (
+              user.role === "vendor" &&
+              user.vendor_status === "approved"
+            ) {
+
+              try {
+
+                requireWalletScope(
+                  piUser
+                );
+
+              } catch (scopeError) {
+
+                return res.status(403).json({
+
+                  success:
+                    false,
+
+                  code:
+                    "PI_WALLET_SCOPE_REQUIRED",
+
+                  message:
+                    "Your vendor account requires Pi wallet permission. Please authenticate again and authorize the wallet_address permission."
+
+                });
+
+              }
+
+            }
+
+
             /* =============================================
-               SUCCESSFUL PI LOGIN
+               UPDATE PI USERNAME
             ============================================= */
 
-            return res.json({
+            db.query(
 
-              success: true,
+              `UPDATE users SET
+                 pi_username=?
+               WHERE id=?`,
 
-              token:
-                createToken(user),
+              [
 
-              user:
-                publicUser(user)
+                username,
 
-            });
+                user.id
+
+              ],
+
+              updateError => {
+
+                if (updateError) {
+
+                  console.error(
+                    "Pi username update:",
+                    updateError
+                  );
+
+                }
+
+
+                /* =========================================
+                   SUCCESSFUL PI LOGIN
+                ========================================= */
+
+                return res.json({
+
+                  success:
+                    true,
+
+                  token:
+                    createToken(user),
+
+                  user:
+                    publicUser(user)
+
+                });
+
+              }
+
+            );
+
+
+            return;
 
           }
 
@@ -789,7 +1032,8 @@ router.post(
 
                 return res.status(500).json({
 
-                  success: false,
+                  success:
+                    false,
 
                   message:
                     "Failed to create Pi user"
@@ -818,7 +1062,8 @@ router.post(
 
                     return res.status(500).json({
 
-                      success: false,
+                      success:
+                        false,
 
                       message:
                         "User fetch failed"
@@ -834,7 +1079,8 @@ router.post(
 
                   return res.json({
 
-                    success: true,
+                    success:
+                      true,
 
                     token:
                       createToken(user),
@@ -868,9 +1114,31 @@ router.post(
       );
 
 
+      if (
+        error.code ===
+        "PI_WALLET_SCOPE_REQUIRED"
+      ) {
+
+        return res.status(403).json({
+
+          success:
+            false,
+
+          code:
+            "PI_WALLET_SCOPE_REQUIRED",
+
+          message:
+            "Pi wallet permission is required. Please authenticate again and authorize the wallet_address permission."
+
+        });
+
+      }
+
+
       return res.status(401).json({
 
-        success: false,
+        success:
+          false,
 
         message:
           "Pi authentication failed"
@@ -934,7 +1202,8 @@ router.post(
 
             return res.status(500).json({
 
-              success: false,
+              success:
+                false,
 
               message:
                 "Database error"
@@ -961,7 +1230,8 @@ router.post(
 
               return res.status(403).json({
 
-                success: false,
+                success:
+                  false,
 
                 message:
                   "Administrator account is not approved"
@@ -988,7 +1258,8 @@ router.post(
 
               return res.status(403).json({
 
-                success: false,
+                success:
+                  false,
 
                 message:
                   "This Pi account is not authorized for the Admin Panel"
@@ -1000,9 +1271,11 @@ router.post(
 
             return res.json({
 
-              success: true,
+              success:
+                true,
 
               message:
+
                 user.admin_level ===
                 "super_admin"
 
@@ -1036,7 +1309,8 @@ router.post(
 
             return res.status(403).json({
 
-              success: false,
+              success:
+                false,
 
               message:
                 "This Pi account is not an authorized administrator"
@@ -1114,7 +1388,8 @@ router.post(
 
                 return res.status(500).json({
 
-                  success: false,
+                  success:
+                    false,
 
                   message:
                     "Failed to create Super Admin"
@@ -1143,7 +1418,8 @@ router.post(
 
                     return res.status(500).json({
 
-                      success: false,
+                      success:
+                        false,
 
                       message:
                         "Super Admin fetch failed"
@@ -1159,7 +1435,8 @@ router.post(
 
                   return res.json({
 
-                    success: true,
+                    success:
+                      true,
 
                     message:
                       "Super Admin created successfully",
@@ -1198,7 +1475,8 @@ router.post(
 
       return res.status(401).json({
 
-        success: false,
+        success:
+          false,
 
         message:
           "Pi account verification failed"
@@ -1216,4 +1494,5 @@ router.post(
    EXPORT ROUTER
 ========================================================= */
 
-module.exports = router;
+module.exports =
+  router;
