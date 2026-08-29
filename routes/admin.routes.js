@@ -1659,21 +1659,28 @@ router.post(
 
 
 /* =========================================================
-   EXPORT
-========================================================= */
-
-/* =========================================================
    SUPER ADMIN
    SEND ADMIN INVITATION
 
    POST /api/admin/invitations
+
+   Supports:
+   - Pi UID
+   - Pi username
+   - Existing marketplace users
+   - New users when Pi UID is supplied
+
+   IMPORTANT:
+   The invitation is tied to the Pi UID.
+   The Pi username is only used to help identify
+   an existing user.
 ========================================================= */
 
 router.post(
   "/invitations",
   verifyAdmin,
   requireSuperAdmin,
-  (req, res) => {
+  async (req, res) => {
 
     const {
       pi_uid,
@@ -1681,272 +1688,453 @@ router.post(
       admin_level
     } = req.body || {};
 
-    if (!pi_uid || !String(pi_uid).trim()) {
 
-      return res.status(400).json({
-        success: false,
-        message: "Pi UID is required"
-      });
+    const cleanPiUid =
+      pi_uid
+        ? String(pi_uid).trim()
+        : "";
 
-    }
+    const cleanUsername =
+      pi_username
+        ? String(pi_username).trim()
+        : "";
+
 
     const requestedLevel =
       admin_level === "moderator"
         ? "moderator"
         : "admin";
 
-    const cleanPiUid =
-      String(pi_uid).trim();
-
-    const cleanUsername =
-      pi_username
-        ? String(pi_username).trim()
-        : null;
-
 
     /*
-     * Prevent inviting yourself.
+     * At least one identity must be supplied.
      */
 
     if (
-      req.user.pi_uid &&
-      String(req.user.pi_uid) === cleanPiUid
+      !cleanPiUid &&
+      !cleanUsername
     ) {
 
       return res.status(400).json({
+
         success: false,
+
         message:
-          "You cannot invite yourself"
+          "Pi username or Pi UID is required"
+
       });
 
     }
 
 
-    /*
-     * Check whether this Pi account exists.
-     */
+    try {
 
-    db.query(
-      `
-      SELECT
-        id,
-        name,
-        email,
-        role,
-        status,
-        pi_uid,
-        pi_username,
-        admin_level
-      FROM users
-      WHERE pi_uid = ?
-      LIMIT 1
-      `,
-      [cleanPiUid],
+      let targetUser = null;
 
-      (userErr, users) => {
 
-        if (userErr) {
+      /* =====================================================
+         FIND BY PI UID
+      ===================================================== */
 
-          console.error(
-            "Invitation user lookup error:",
-            userErr
+      if (cleanPiUid) {
+
+        const [uidRows] =
+          await db.promise().query(
+            `
+            SELECT
+              id,
+              name,
+              email,
+              role,
+              status,
+              pi_uid,
+              pi_username,
+              admin_level
+            FROM users
+            WHERE pi_uid = ?
+            LIMIT 1
+            `,
+            [cleanPiUid]
           );
 
-          return res.status(500).json({
+
+        if (uidRows.length) {
+
+          targetUser =
+            uidRows[0];
+
+        }
+
+      }
+
+
+      /* =====================================================
+         FIND BY PI USERNAME
+         This solves the current frontend/backend mismatch.
+      ===================================================== */
+
+      if (
+        !targetUser &&
+        cleanUsername
+      ) {
+
+        const [usernameRows] =
+          await db.promise().query(
+            `
+            SELECT
+              id,
+              name,
+              email,
+              role,
+              status,
+              pi_uid,
+              pi_username,
+              admin_level
+            FROM users
+            WHERE LOWER(pi_username) = LOWER(?)
+            LIMIT 1
+            `,
+            [cleanUsername]
+          );
+
+
+        if (usernameRows.length) {
+
+          targetUser =
+            usernameRows[0];
+
+        }
+
+      }
+
+
+      /* =====================================================
+         IF USER EXISTS
+      ===================================================== */
+
+      if (targetUser) {
+
+        /*
+         * Use the verified UID already stored
+         * in our database.
+         */
+
+        if (
+          !targetUser.pi_uid
+        ) {
+
+          return res.status(400).json({
+
             success: false,
+
             message:
-              "Failed to find Pi account"
+              "This user does not yet have a verified Pi UID. Ask the user to sign in with Pi first."
+
           });
 
         }
 
 
         /*
-         * If account exists, make sure
-         * it isn't already an administrator.
+         * The UID supplied by the Super Admin,
+         * if any, must match the existing account.
          */
 
-        if (users.length) {
+        if (
+          cleanPiUid &&
+          String(targetUser.pi_uid) !==
+          String(cleanPiUid)
+        ) {
 
-          const user =
-            users[0];
+          return res.status(409).json({
 
-          if (
-            user.role === "admin"
-          ) {
+            success: false,
 
-            return res.status(400).json({
-              success: false,
-              message:
-                "This Pi account is already an administrator"
-            });
+            message:
+              "Pi username and Pi UID belong to different accounts"
 
-          }
+          });
 
         }
 
 
         /*
-         * Prevent duplicate active invitations.
+         * Use the database UID as the
+         * authoritative identity.
          */
 
-        db.query(
+        targetUser.pi_uid =
+          String(targetUser.pi_uid);
+
+      }
+
+
+      /* =====================================================
+         * NEW USER
+         * ===================================================== */
+
+      if (!targetUser) {
+
+        /*
+         * A username alone is not enough to safely
+         * create an invitation for someone who has
+         * never logged into the marketplace.
+         *
+         * We need the Pi UID in this case.
+         */
+
+        if (!cleanPiUid) {
+
+          return res.status(404).json({
+
+            success: false,
+
+            message:
+              "This Pi user is not registered in the marketplace yet. Ask the user to sign in once, then send the invitation again, or provide the user's Pi UID."
+
+          });
+
+        }
+
+      }
+
+
+      const finalPiUid =
+        targetUser
+          ? String(targetUser.pi_uid)
+          : cleanPiUid;
+
+
+      const finalUsername =
+        targetUser?.pi_username ||
+        cleanUsername ||
+        null;
+
+
+      /* =====================================================
+         PREVENT SELF-INVITATION
+      ===================================================== */
+
+      if (
+        req.user.pi_uid &&
+        String(req.user.pi_uid) ===
+        finalPiUid
+      ) {
+
+        return res.status(400).json({
+
+          success: false,
+
+          message:
+            "You cannot invite yourself"
+
+        });
+
+      }
+
+
+      /* =====================================================
+         ALREADY ADMIN?
+      ===================================================== */
+
+      if (
+        targetUser &&
+        targetUser.role === "admin"
+      ) {
+
+        return res.status(400).json({
+
+          success: false,
+
+          message:
+            "This Pi account is already an administrator"
+
+        });
+
+      }
+
+
+      /* =====================================================
+         CHECK EXISTING PENDING INVITATION
+      ===================================================== */
+
+      const [existingInvitations] =
+        await db.promise().query(
           `
           SELECT
-            id
+            id,
+            admin_level,
+            status,
+            expires_at
           FROM admin_invitations
           WHERE invited_pi_uid = ?
           AND status = 'pending'
           AND expires_at > NOW()
           LIMIT 1
           `,
-          [cleanPiUid],
-
-          (inviteCheckErr, existing) => {
-
-            if (inviteCheckErr) {
-
-              console.error(
-                "Invitation check error:",
-                inviteCheckErr
-              );
-
-              return res.status(500).json({
-                success: false,
-                message:
-                  "Failed to check existing invitation"
-              });
-
-            }
-
-
-            if (existing.length) {
-
-              return res.status(409).json({
-                success: false,
-                message:
-                  "This Pi account already has a pending invitation"
-              });
-
-            }
-
-
-            /*
-             * Invitation expires in 7 days.
-             */
-
-            db.query(
-              `
-              INSERT INTO admin_invitations
-              (
-                invited_pi_uid,
-                invited_pi_username,
-                invited_by,
-                admin_level,
-                status,
-                expires_at
-              )
-              VALUES
-              (
-                ?, ?, ?, ?, 'pending',
-                DATE_ADD(NOW(), INTERVAL 7 DAY)
-              )
-              `,
-              [
-                cleanPiUid,
-                cleanUsername,
-                req.user.id,
-                requestedLevel
-              ],
-
-              (insertErr, result) => {
-
-                if (insertErr) {
-
-                  console.error(
-                    "Invitation creation error:",
-                    insertErr
-                  );
-
-                  return res.status(500).json({
-                    success: false,
-                    message:
-                      "Failed to create invitation"
-                  });
-
-                }
-
-
-                /*
-                 * If the user already exists,
-                 * create a notification immediately.
-                 */
-
-                if (users.length) {
-
-                  const userId =
-                    users[0].id;
-
-                  db.query(
-                    `
-                    INSERT INTO notifications
-                    (
-                      user_id,
-                      message,
-                      type
-                    )
-                    VALUES (?, ?, ?)
-                    `,
-                    [
-                      userId,
-                      `You have received an invitation from the Super Admin to apply for ${requestedLevel} access.`,
-                      "admin_invitation"
-                    ],
-                    notificationErr => {
-
-                      if (notificationErr) {
-
-                        console.error(
-                          "Invitation notification error:",
-                          notificationErr
-                        );
-
-                      }
-
-                    }
-                  );
-
-                }
-
-
-                return res.status(201).json({
-
-                  success: true,
-
-                  message:
-                    `Admin invitation sent successfully to ${cleanUsername || cleanPiUid}`,
-
-                  invitation: {
-                    id: result.insertId,
-                    pi_uid: cleanPiUid,
-                    pi_username: cleanUsername,
-                    admin_level: requestedLevel,
-                    status: "pending"
-                  }
-
-                });
-
-              }
-            );
-
-          }
+          [finalPiUid]
         );
 
+
+      if (
+        existingInvitations.length
+      ) {
+
+        return res.status(409).json({
+
+          success: false,
+
+          message:
+            "This Pi account already has a pending invitation"
+
+        });
+
       }
-    );
+
+
+      /* =====================================================
+         CREATE INVITATION
+      ===================================================== */
+
+      const [insertResult] =
+        await db.promise().query(
+          `
+          INSERT INTO admin_invitations
+          (
+            invited_pi_uid,
+            invited_pi_username,
+            invited_by,
+            admin_level,
+            status,
+            expires_at
+          )
+          VALUES
+          (
+            ?,
+            ?,
+            ?,
+            ?,
+            'pending',
+            DATE_ADD(NOW(), INTERVAL 7 DAY)
+          )
+          `,
+          [
+            finalPiUid,
+            finalUsername,
+            req.user.id,
+            requestedLevel
+          ]
+        );
+
+
+      const invitationId =
+        insertResult.insertId;
+
+
+      /* =====================================================
+         CREATE NORMAL NOTIFICATION
+         IF USER ALREADY EXISTS
+      ===================================================== */
+
+      if (
+        targetUser
+      ) {
+
+        try {
+
+          await db.promise().query(
+            `
+            INSERT INTO notifications
+            (
+              user_id,
+              message,
+              type
+            )
+            VALUES (?, ?, ?)
+            `,
+            [
+              targetUser.id,
+
+              `You have received an invitation from the Super Admin to apply for ${requestedLevel} access.`,
+
+              "admin_invitation"
+            ]
+          );
+
+        } catch (
+          notificationError
+        ) {
+
+          /*
+           * Do not destroy the invitation just because
+           * the optional notification failed.
+           */
+
+          console.error(
+            "Admin invitation notification error:",
+            notificationError
+          );
+
+        }
+
+      }
+
+
+      /* =====================================================
+         SUCCESS
+      ===================================================== */
+
+      return res.status(201).json({
+
+        success: true,
+
+        message:
+          `Admin invitation created successfully for ${finalUsername || finalPiUid}`,
+
+        invitation: {
+
+          id:
+            invitationId,
+
+          pi_uid:
+            finalPiUid,
+
+          pi_username:
+            finalUsername,
+
+          admin_level:
+            requestedLevel,
+
+          status:
+            "pending"
+
+        }
+
+      });
+
+
+    } catch (error) {
+
+      console.error(
+        "Admin invitation creation error:",
+        error
+      );
+
+
+      return res.status(500).json({
+
+        success: false,
+
+        message:
+          "Failed to create admin invitation"
+
+      });
+
+    }
 
   }
 );
+
 
 /* =========================================================
    SUPER ADMIN
@@ -2227,7 +2415,7 @@ router.get(
             u.pi_username,
 
             p.business_name,
-            p.pi_wallet_address
+            p.pi_wallet_address AS wallet_address
 
           FROM earnings e
 
