@@ -211,6 +211,63 @@ async function fetchPayment(
 
 
 /* =========================================================
+   STRICT GET PAYMENT
+========================================================= */
+
+async function fetchPaymentStrict(
+  paymentId
+) {
+
+  if (!paymentId) {
+    throw new Error(
+      "Pi payment ID is required"
+    );
+  }
+
+  try {
+
+    const response =
+      await axios.get(
+        `${PI_BASE_URL}/payments/${paymentId}`,
+        {
+          headers: apiHeaders(),
+          timeout: 15000
+        }
+      );
+
+    return response.data || null;
+
+  } catch (error) {
+
+    const data =
+      error.response?.data || {};
+
+    const err =
+      new Error(
+        data.error_message ||
+        data.message ||
+        error.message ||
+        "Unable to fetch Pi payment"
+      );
+
+    err.status =
+      error.response?.status;
+
+    err.code =
+      data.error ||
+      error.code;
+
+    err.response =
+      error.response;
+
+    throw err;
+
+  }
+
+}
+
+
+/* =========================================================
    APPROVE U2A PAYMENT
 ========================================================= */
 
@@ -502,7 +559,7 @@ async function submitA2UPayment(
 
 
   const payment =
-    await fetchPayment(
+    await fetchPaymentStrict(
       paymentId
     );
 
@@ -641,11 +698,28 @@ async function submitA2UPayment(
   ) {
 
     /*
-     * Keep this branch for compatibility
-     * with Pi network responses, but note
-     * that Pi's current Advanced Payments
-     * documentation says A2U is Testnet-only.
+     * Pi currently documents A2U as Testnet-only.
+     * Keep the Mainnet branch disabled by default so a
+     * Mainnet migration cannot accidentally attempt an A2U
+     * payout that Pi does not currently support.
+     *
+     * If Pi officially enables A2U on Mainnet later, set:
+     * PI_A2U_ALLOW_MAINNET=true
+     *
+     * The payment's own network remains the source of truth.
      */
+    if (
+      String(
+        process.env.PI_A2U_ALLOW_MAINNET ||
+        "false"
+      ).toLowerCase() !== "true"
+    ) {
+
+      throw new Error(
+        "Pi A2U vendor payouts are currently supported only on Pi Testnet. Keep vendor payouts on Testnet until Pi enables A2U for Mainnet."
+      );
+
+    }
 
     horizonUrl =
       "https://api.mainnet.minepi.com";
@@ -863,6 +937,8 @@ module.exports = {
   getPiUser,
 
   fetchPayment,
+
+  fetchPaymentStrict,
 
   approvePayment,
 
