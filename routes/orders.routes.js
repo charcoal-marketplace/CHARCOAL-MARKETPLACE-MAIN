@@ -1232,6 +1232,47 @@ router.post(
 
 
           /*
+           * A previously cancelled earning must be reopened
+           * when the buyer confirms the order again. Otherwise
+           * it would remain invisible to /admin/earnings/pending.
+           */
+
+          if (
+            existing.status ===
+            "cancelled"
+          ) {
+
+            await connection.query(
+              `UPDATE earnings
+               SET
+                 amount_pi=?,
+                 status='pending',
+                 payout_payment_id=NULL,
+                 payout_txid=NULL,
+                 paid_at=NULL,
+                 payout_error=NULL
+               WHERE id=?`,
+              [
+                money(vendor.amount_pi),
+                existing.id
+              ]
+            );
+
+            createdEarnings.push({
+              id: existing.id,
+              vendor_id: vendor.vendor_id,
+              amount_pi: money(vendor.amount_pi),
+              status: "pending",
+              existing: true,
+              reopened: true
+            });
+
+            continue;
+
+          }
+
+
+          /*
            * If it already exists but is still pending,
            * simply reuse it.
            */

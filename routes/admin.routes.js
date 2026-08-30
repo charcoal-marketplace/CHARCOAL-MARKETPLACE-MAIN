@@ -12,6 +12,7 @@ const {
   submitA2UPayment,
   completePayment,
   fetchPayment,
+  fetchPaymentStrict,
   getIncompleteServerPayments
 } = require("../piService");
 
@@ -2413,17 +2414,31 @@ router.get(
             u.email AS vendor_email,
             u.pi_uid,
             u.pi_username,
+            u.business_name,
+            u.pi_wallet_address AS wallet_address,
 
-            p.business_name,
-            p.pi_wallet_address AS wallet_address
+            o.status AS order_status,
+            o.delivery_status,
+            o.buyer_confirmed_at,
+
+            CASE
+              WHEN o.buyer_confirmed_at IS NOT NULL
+                AND u.pi_uid IS NOT NULL
+                AND u.pi_wallet_address IS NOT NULL
+                AND u.role = 'vendor'
+                AND u.status = 'approved'
+                AND u.vendor_status = 'approved'
+              THEN 1
+              ELSE 0
+            END AS payout_ready
 
           FROM earnings e
 
           LEFT JOIN users u
             ON e.vendor_id = u.id
 
-          LEFT JOIN users p
-            ON e.vendor_id = p.id
+          LEFT JOIN orders o
+            ON e.order_id = o.id
 
           WHERE e.type = 'sale'
             AND e.status = 'pending'
@@ -2836,6 +2851,31 @@ router.post(
 
 
       /* =====================================================
+         VENDOR WALLET AUTHORIZATION
+      ===================================================== */
+
+      if (
+        !earning.pi_wallet_address
+      ) {
+
+        await connection.rollback();
+
+        return res.status(409).json({
+
+          success: false,
+
+          code:
+            "PI_WALLET_SCOPE_REQUIRED",
+
+          message:
+            "Vendor has no verified Pi wallet address. Ask the vendor to sign in again in Pi Browser and allow wallet address access."
+
+        });
+
+      }
+
+
+      /* =====================================================
          VENDOR STATUS
       ===================================================== */
 
@@ -2916,7 +2956,59 @@ router.post(
 
 
       /* =====================================================
-         CREATE A2U PAYMENT
+         RESUME OR CREATE A2U PAYMENT
+      ===================================================== */
+
+      let currentPayment = null;
+
+      if (paymentId) {
+
+        try {
+
+          currentPayment =
+            await fetchPaymentStrict(
+              paymentId
+            );
+
+        } catch (paymentFetchError) {
+
+          /*
+           * A stale payment identifier can happen when an older
+           * failed payout was created but later disappeared from
+           * the Pi server. A confirmed 404 is safe to recover
+           * from because there is no payment to complete.
+           */
+          if (
+            Number(paymentFetchError.status) === 404 ||
+            paymentFetchError.code === "payment_not_found"
+          ) {
+
+            await db.promise().query(
+              `UPDATE earnings
+               SET payout_payment_id=NULL,
+                   payout_txid=NULL,
+                   payout_error=?
+               WHERE id=?
+                 AND status='pending'`,
+              [
+                "Previous A2U payment identifier was not found on Pi; a new payout payment will be created.",
+                earning.id
+              ]
+            );
+
+            paymentId = null;
+
+          } else {
+            throw paymentFetchError;
+          }
+
+        }
+
+      }
+
+
+      /* =====================================================
+         CREATE A2U PAYMENT WHEN NONE CAN BE RESUMED
       ===================================================== */
 
       if (!paymentId) {
@@ -2964,43 +3056,22 @@ router.post(
         }
 
 
-        /*
-         * Save payment ID immediately.
-         *
-         * The named lock prevents another
-         * payout request from creating another
-         * payment while this request is running.
-         */
-
         const [paymentUpdate] =
           await db.promise().query(
-            `
-            UPDATE earnings
-
-            SET
-              payout_payment_id = ?,
-              payout_error = NULL
-
-            WHERE id = ?
-
-              AND status = 'pending'
-
-              AND (
-                payout_payment_id IS NULL
-                OR payout_payment_id = ?
-              )
-            `,
+            `UPDATE earnings
+             SET payout_payment_id=?,
+                 payout_error=NULL
+             WHERE id=?
+               AND status='pending'
+               AND payout_payment_id IS NULL`,
             [
               paymentId,
-              earning.id,
-              paymentId
+              earning.id
             ]
           );
 
 
-        if (
-          !paymentUpdate.affectedRows
-        ) {
+        if (!paymentUpdate.affectedRows) {
 
           throw new Error(
             "Unable to safely store A2U payment identifier"
@@ -3008,23 +3079,64 @@ router.post(
 
         }
 
+
+        currentPayment =
+          payment;
+
       }
 
 
       /* =====================================================
-         FETCH A2U PAYMENT
+         FETCH CURRENT A2U PAYMENT IF NEEDED
       ===================================================== */
 
-      const currentPayment =
-        await fetchPayment(
-          paymentId
-        );
+      if (!currentPayment) {
+
+        currentPayment =
+          await fetchPaymentStrict(
+            paymentId
+          );
+
+      }
 
 
       if (!currentPayment) {
 
         throw new Error(
           "Unable to retrieve A2U payment from Pi"
+        );
+
+      }
+
+
+      /* =====================================================
+         HANDLE CANCELLED A2U PAYMENT
+      ===================================================== */
+
+      const currentStatus =
+        currentPayment.status || {};
+
+
+      if (
+        currentStatus.cancelled === true ||
+        currentStatus.user_cancelled === true
+      ) {
+
+        await db.promise().query(
+          `UPDATE earnings
+           SET payout_payment_id=NULL,
+               payout_txid=NULL,
+               payout_error=?
+           WHERE id=?
+             AND status='pending'`,
+          [
+            "Previous A2U payment was cancelled. A new payout payment will be created on the next release attempt.",
+            earning.id
+          ]
+        );
+
+        throw new Error(
+          "The previous Pi vendor payout payment was cancelled. Please press Release Pi again to create a new payout payment."
         );
 
       }
@@ -3068,14 +3180,32 @@ router.post(
          SUBMIT TO PI BLOCKCHAIN
       ===================================================== */
 
-      const submission =
-        await submitA2UPayment(
-          paymentId
-        );
+      const existingPaymentTxid =
+        currentPayment.transaction?.txid ||
+        currentPayment.transaction_id ||
+        null;
 
 
-      txid =
-        submission.txid;
+      const alreadyCompleted =
+        currentPayment.status?.developer_completed === true;
+
+
+      if (alreadyCompleted && existingPaymentTxid) {
+
+        txid =
+          existingPaymentTxid;
+
+      } else {
+
+        const submission =
+          await submitA2UPayment(
+            paymentId
+          );
+
+        txid =
+          submission.txid;
+
+      }
 
 
       if (!txid) {
@@ -3114,11 +3244,21 @@ router.post(
          COMPLETE PAYMENT
       ===================================================== */
 
-      const completedPayment =
-        await completePayment(
-          paymentId,
-          txid
-        );
+      let completedPayment =
+        currentPayment;
+
+
+      if (
+        !alreadyCompleted
+      ) {
+
+        completedPayment =
+          await completePayment(
+            paymentId,
+            txid
+          );
+
+      }
 
 
       /*
@@ -3126,7 +3266,7 @@ router.post(
        */
 
       const confirmed =
-        await fetchPayment(
+        await fetchPaymentStrict(
           paymentId
         );
 
@@ -3356,6 +3496,9 @@ router.post(
         success: false,
 
         message:
+          error.response?.data?.error_message ||
+          error.response?.data?.message ||
+          error.message ||
           "Vendor Pi payout failed",
 
         earning_id:
@@ -3364,7 +3507,12 @@ router.post(
         payment_id:
           paymentId,
 
-        txid
+        txid,
+
+        error:
+          error.response?.data ||
+          error.message ||
+          null
 
       });
 

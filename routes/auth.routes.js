@@ -193,6 +193,29 @@ async function verifyPiAccount(accessToken) {
 
 
 /* =========================================================
+   PI SCOPE HELPER
+========================================================= */
+
+function hasPiScope(piUser, scope) {
+
+  const scopes =
+    piUser?.credentials?.scopes;
+
+  /*
+   * Some Pi responses may omit credentials.scopes while
+   * still returning the consented field. In that case the
+   * field itself is enough evidence for this backend.
+   */
+  if (!Array.isArray(scopes)) {
+    return true;
+  }
+
+  return scopes.includes(scope);
+
+}
+
+
+/* =========================================================
    FIND EXISTING USER
 =========================================================
 
@@ -280,7 +303,7 @@ function findExistingPiUser(
 
             `SELECT *
              FROM users
-             WHERE pi_username=?
+             WHERE LOWER(pi_username)=LOWER(?)
              LIMIT 1`,
 
             [username],
@@ -738,43 +761,32 @@ router.post(
 
 
       /*
-       * Prefer wallet address verified/returned by Pi.
-       *
-       * The manually supplied field remains as a
-       * compatibility fallback for existing registrations.
+       * A vendor payout must use the wallet returned by Pi.
+       * Never accept a wallet address typed into the form as
+       * a substitute for Pi authorization.
        */
 
-      const verifiedWalletAddress =
+      const walletAddress =
         piUser.wallet_address ||
         null;
 
 
-      const submittedWalletAddress =
-        pi_wallet_address
-          ? String(
-              pi_wallet_address
-            ).trim()
-          : null;
+      if (
+        !hasPiScope(
+          piUser,
+          "wallet_address"
+        ) ||
+        !walletAddress
+      ) {
 
-
-      const walletAddress =
-        verifiedWalletAddress ||
-        submittedWalletAddress ||
-        null;
-
-
-      /*
-       * Vendor payouts require a receiving wallet.
-       */
-
-      if (!walletAddress) {
-
-        return res.status(400).json({
+        return res.status(403).json({
 
           success: false,
 
+          code: "PI_WALLET_SCOPE_REQUIRED",
+
           message:
-            "Pi wallet address is required. Please authorize the wallet address permission in Pi Browser and try again."
+            "Pi wallet permission is required for vendor payouts. Please authenticate again in Pi Browser and allow wallet address access."
 
         });
 
@@ -949,26 +961,58 @@ router.post(
             "ER_DUP_ENTRY"
           ) {
 
-            return res.status(409).json({
+            /*
+             * Race-safe migration recovery. The username may
+             * already belong to the old Testnet account. Find
+             * it again and let the normal reconciliation path
+             * update its UID/wallet instead of creating a new
+             * user.
+             */
+            try {
+
+              match =
+                await findExistingPiUser(
+                  uid,
+                  username
+                );
+
+              if (match.user) {
+                /* Continue below with the existing account. */
+              } else {
+                return res.status(409).json({
+                  success: false,
+                  message:
+                    "A Pi account with this username already exists. Please authenticate again so the existing account can be linked."
+                });
+              }
+
+            } catch (recoverError) {
+
+              console.error(
+                "[PI AUTH] Duplicate Pi account recovery failed:",
+                recoverError
+              );
+
+              return res.status(500).json({
+                success: false,
+                message:
+                  "Unable to reconcile the existing Pi account"
+              });
+
+            }
+
+          } else {
+
+            return res.status(500).json({
 
               success: false,
 
               message:
-                "A Pi account with this username already exists. Please log in again so your Mainnet account can be linked to your existing account."
+                "Failed to create Pi user"
 
             });
 
           }
-
-
-          return res.status(500).json({
-
-            success: false,
-
-            message:
-              "Failed to create Pi user"
-
-          });
 
         }
 
@@ -1305,6 +1349,31 @@ router.post(
 
 
         /* =============================================
+           VENDOR WALLET PERMISSION
+        ============================================= */
+
+        if (
+          user.role === "vendor" &&
+          user.vendor_status === "approved" &&
+          !piUser.wallet_address
+        ) {
+
+          return res.status(403).json({
+
+            success: false,
+
+            code:
+              "PI_WALLET_SCOPE_REQUIRED",
+
+            message:
+              "Your vendor account needs Pi wallet permission. Please authenticate again in Pi Browser and allow wallet address access before using vendor payouts."
+
+          });
+
+        }
+
+
+        /* =============================================
            CHECK ACCOUNT STATUS
         ============================================= */
 
@@ -1427,13 +1496,53 @@ router.post(
           "ER_DUP_ENTRY"
         ) {
 
+          try {
+
+            const recovered =
+              await findExistingPiUser(
+                uid,
+                username
+              );
+
+            if (recovered.user) {
+
+              const recoveredUser =
+                await reconcilePiUser(
+                  recovered.user,
+                  piUser
+                );
+
+              if (recoveredUser.status !== "approved") {
+                return res.status(403).json({
+                  success: false,
+                  message:
+                    recoveredUser.vendor_status === "pending"
+                      ? "Your vendor application is awaiting Admin approval."
+                      : "Account is not approved"
+                });
+              }
+
+              return res.json({
+                success: true,
+                token: createToken(recoveredUser),
+                user: publicUser(recoveredUser)
+              });
+
+            }
+
+          } catch (recoverError) {
+
+            console.error(
+              "Pi login duplicate recovery:",
+              recoverError
+            );
+
+          }
+
           return res.status(409).json({
-
             success: false,
-
             message:
-              "Your existing Pi account was found but could not yet be linked to Mainnet. Please try Pi login again."
-
+              "Your existing Pi account could not be reconciled. Please try Pi login again."
           });
 
         }
@@ -1687,8 +1796,8 @@ router.post(
 
         !PI_SUPER_ADMIN_USERNAME ||
 
-        username !==
-          PI_SUPER_ADMIN_USERNAME
+        String(username).toLowerCase() !==
+          String(PI_SUPER_ADMIN_USERNAME).trim().toLowerCase()
 
       ) {
 
@@ -1853,13 +1962,61 @@ router.post(
           "ER_DUP_ENTRY"
         ) {
 
+          try {
+
+            const recovered =
+              await findExistingPiUser(
+                uid,
+                username
+              );
+
+            if (recovered.user) {
+
+              const recoveredUser =
+                await reconcilePiUser(
+                  recovered.user,
+                  piUser
+                );
+
+              if (
+                recoveredUser.status === "approved" &&
+                recoveredUser.role === "admin" &&
+                [
+                  "super_admin",
+                  "admin",
+                  "moderator"
+                ].includes(
+                  recoveredUser.admin_level
+                )
+              ) {
+
+                return res.json({
+                  success: true,
+                  message:
+                    recoveredUser.admin_level === "super_admin"
+                      ? "Super Admin login successful"
+                      : "Administrator login successful",
+                  token: createToken(recoveredUser),
+                  user: publicUser(recoveredUser)
+                });
+
+              }
+
+            }
+
+          } catch (recoverError) {
+
+            console.error(
+              "Pi admin duplicate recovery:",
+              recoverError
+            );
+
+          }
+
           return res.status(409).json({
-
             success: false,
-
             message:
-              "A Super Admin or Pi account with this username already exists. Please retry the Pi Admin login so the existing account can be reconciled."
-
+              "The Pi administrator account already exists but could not be reconciled automatically."
           });
 
         }
