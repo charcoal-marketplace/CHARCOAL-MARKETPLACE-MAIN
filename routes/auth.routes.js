@@ -1,17 +1,30 @@
 const router = require("express").Router();
-const jwt = require("jsonwebtoken");
-const axios = require("axios");
-const db = require("../config/db");
+
+const jwt =
+  require("jsonwebtoken");
+
+const axios =
+  require("axios");
+
+const db =
+  require("../config/db");
+
 
 
 /* =========================================================
    CONFIGURATION
 ========================================================= */
 
-const SECRET = process.env.JWT_SECRET;
+const SECRET =
+  process.env.JWT_SECRET;
+
 
 if (!SECRET) {
-  throw new Error("JWT_SECRET is required");
+
+  throw new Error(
+    "JWT_SECRET is required"
+  );
+
 }
 
 
@@ -32,6 +45,7 @@ if (!PI_SUPER_ADMIN_USERNAME) {
 }
 
 
+
 /* =========================================================
    CREATE JWT TOKEN
 ========================================================= */
@@ -41,28 +55,39 @@ function createToken(user) {
   return jwt.sign(
 
     {
-      id: user.id,
 
-      email: user.email,
+      id:
+        user.id,
 
-      role: user.role,
+      email:
+        user.email,
+
+      role:
+        user.role,
 
       admin_level:
-        user.admin_level || "none",
+        user.admin_level ||
+        "none",
 
       pi_uid:
-        user.pi_uid || null
+        user.pi_uid ||
+        null
+
     },
 
     SECRET,
 
     {
-      expiresIn: "1d"
+
+      expiresIn:
+        "1d"
+
     }
 
   );
 
 }
+
 
 
 /* =========================================================
@@ -73,58 +98,77 @@ function publicUser(user) {
 
   return {
 
-    id: user.id,
+    id:
+      user.id,
 
-    name: user.name,
+    name:
+      user.name,
 
-    email: user.email,
+    email:
+      user.email,
 
-    role: user.role,
+    role:
+      user.role,
 
-    status: user.status,
+    status:
+      user.status,
 
     pi_uid:
-      user.pi_uid || null,
+      user.pi_uid ||
+      null,
 
     pi_username:
-      user.pi_username || null,
+      user.pi_username ||
+      null,
 
     /*
      * Public receiving wallet address.
      *
      * NEVER expose PI_WALLET_PRIVATE_SEED here.
      */
+
     pi_wallet_address:
-      user.pi_wallet_address || null,
+      user.pi_wallet_address ||
+      null,
 
     admin_level:
-      user.admin_level || "none",
+      user.admin_level ||
+      "none",
 
     vendor_status:
-      user.vendor_status || "none",
+      user.vendor_status ||
+      "none",
 
     business_name:
-      user.business_name || null,
+      user.business_name ||
+      null,
 
     business_phone:
-      user.business_phone || null,
+      user.business_phone ||
+      null,
 
     business_location:
-      user.business_location || null,
+      user.business_location ||
+      null,
 
     business_description:
-      user.business_description || null
+      user.business_description ||
+      null
 
   };
 
 }
 
 
+
 /* =========================================================
    VERIFY PI ACCOUNT
 ========================================================= */
 
-async function verifyPiAccount(accessToken) {
+async function verifyPiAccount(
+  accessToken
+) {
+
 
   if (!accessToken) {
 
@@ -142,7 +186,9 @@ async function verifyPiAccount(accessToken) {
 
   const response =
     await axios.get(
+
       `${PI_BASE_URL}/me`,
+
       {
 
         headers: {
@@ -152,14 +198,17 @@ async function verifyPiAccount(accessToken) {
 
         },
 
-        timeout: 10000
+        timeout:
+          10000
 
       }
+
     );
 
 
   const piUser =
-    response.data || {};
+    response.data ||
+    {};
 
 
   if (!piUser.uid) {
@@ -174,6 +223,7 @@ async function verifyPiAccount(accessToken) {
   console.log(
     "[PI AUTH] Pi account verified:",
     {
+
       uid:
         piUser.uid,
 
@@ -183,6 +233,7 @@ async function verifyPiAccount(accessToken) {
       wallet_address:
         piUser.wallet_address ||
         null
+
     }
   );
 
@@ -192,46 +243,18 @@ async function verifyPiAccount(accessToken) {
 }
 
 
-/* =========================================================
-   PI SCOPE HELPER
-========================================================= */
-
-function hasPiScope(piUser, scope) {
-
-  const scopes =
-    piUser?.credentials?.scopes;
-
-  /*
-   * Some Pi responses may omit credentials.scopes while
-   * still returning the consented field. In that case the
-   * field itself is enough evidence for this backend.
-   */
-  if (!Array.isArray(scopes)) {
-    return true;
-  }
-
-  return scopes.includes(scope);
-
-}
-
 
 /* =========================================================
-   FIND EXISTING USER
+   FIND EXISTING PI USER
 =========================================================
 
-   IMPORTANT FOR TESTNET -> MAINNET MIGRATION
+   Testnet -> Mainnet migration:
 
-   Old users may have the same Pi username but a different
-   app-local Pi UID.
+   1. Search current UID.
+   2. If not found, search username.
+   3. If username matches an old account, reconcile it
+      with the current UID.
 
-   Therefore:
-
-   1. Search by current pi_uid.
-   2. If not found, search by pi_username.
-   3. If found by username, update the old record with
-      the current Mainnet UID.
-
-   This preserves the existing database account.
 ========================================================= */
 
 function findExistingPiUser(
@@ -239,12 +262,11 @@ function findExistingPiUser(
   username
 ) {
 
+
   return new Promise(
+
     (resolve, reject) => {
 
-      /*
-       * First try the current Pi UID.
-       */
 
       db.query(
 
@@ -257,6 +279,7 @@ function findExistingPiUser(
 
         (err, rows) => {
 
+
           if (err) {
 
             return reject(err);
@@ -267,6 +290,7 @@ function findExistingPiUser(
           if (rows.length) {
 
             return resolve({
+
               user:
                 rows[0],
 
@@ -278,16 +302,15 @@ function findExistingPiUser(
           }
 
 
-          /*
-           * UID was not found.
-           *
-           * This is where Testnet -> Mainnet
-           * migration is handled.
-           */
+
+          /* ===============================================
+             SEARCH BY PI USERNAME
+          =============================================== */
 
           if (!username) {
 
             return resolve({
+
               user:
                 null,
 
@@ -310,6 +333,7 @@ function findExistingPiUser(
 
             (err2, rows2) => {
 
+
               if (err2) {
 
                 return reject(err2);
@@ -320,6 +344,7 @@ function findExistingPiUser(
               if (!rows2.length) {
 
                 return resolve({
+
                   user:
                     null,
 
@@ -356,14 +381,9 @@ function findExistingPiUser(
 }
 
 
+
 /* =========================================================
    RECONCILE PI USER
-=========================================================
-
-   If an existing account was found by username instead of
-   UID, update the account with the current Mainnet UID.
-
-   Existing role/admin/vendor/business data is preserved.
 ========================================================= */
 
 function reconcilePiUser(
@@ -371,11 +391,15 @@ function reconcilePiUser(
   piUser
 ) {
 
+
   return new Promise(
+
     (resolve, reject) => {
+
 
       const uid =
         piUser.uid;
+
 
       const username =
         piUser.username ||
@@ -383,84 +407,123 @@ function reconcilePiUser(
         null;
 
 
+      /*
+       * Pi only supplies wallet_address when the
+       * wallet_address permission is available.
+       *
+       * Therefore NULL is NOT considered an error.
+       */
+
       const walletAddress =
         piUser.wallet_address ||
         null;
 
 
       const fields = [];
+
       const values = [];
 
 
-      /*
-       * Always make sure current Mainnet UID is stored.
-       */
+
+      /* ===============================================
+         UPDATE UID
+      ================================================ */
 
       if (
+
         uid &&
-        String(user.pi_uid || "") !==
+
+        String(
+          user.pi_uid ||
+          ""
+        ) !==
+
         String(uid)
+
       ) {
 
         fields.push(
           "pi_uid=?"
         );
 
-        values.push(uid);
+        values.push(
+          uid
+        );
 
       }
 
 
-      /*
-       * Keep the latest verified Pi username.
-       */
+
+      /* ===============================================
+         UPDATE USERNAME
+      ================================================ */
 
       if (
+
         username &&
-        String(user.pi_username || "") !==
+
+        String(
+          user.pi_username ||
+          ""
+        ) !==
+
         String(username)
+
       ) {
 
         fields.push(
           "pi_username=?"
         );
 
-        values.push(username);
+        values.push(
+          username
+        );
 
       }
 
 
-      /*
-       * Only update wallet address when Pi has actually
-       * returned a verified wallet address.
-       *
-       * Never overwrite an existing wallet with NULL.
-       */
+
+      /* ===============================================
+         UPDATE WALLET ONLY IF PI PROVIDED IT
+      ================================================ */
 
       if (
+
         walletAddress &&
-        String(user.pi_wallet_address || "") !==
+
+        String(
+          user.pi_wallet_address ||
+          ""
+        ) !==
+
         String(walletAddress)
+
       ) {
 
         fields.push(
           "pi_wallet_address=?"
         );
 
-        values.push(walletAddress);
+        values.push(
+          walletAddress
+        );
 
       }
 
 
-      /*
-       * Nothing needs changing.
-       */
+
+      /* ===============================================
+         NOTHING TO UPDATE
+      ================================================ */
 
       if (!fields.length) {
 
-        return resolve(user);
+        return resolve(
+          user
+        );
 
       }
+
 
 
       values.push(
@@ -483,16 +546,13 @@ function reconcilePiUser(
 
         err => {
 
+
           if (err) {
 
             return reject(err);
 
           }
 
-
-          /*
-           * Return the updated account.
-           */
 
           db.query(
 
@@ -505,6 +565,7 @@ function reconcilePiUser(
 
             (err2, rows) => {
 
+
               if (err2) {
 
                 return reject(err2);
@@ -515,17 +576,22 @@ function reconcilePiUser(
               if (!rows.length) {
 
                 return reject(
+
                   new Error(
                     "User disappeared after Pi account reconciliation"
                   )
+
                 );
 
               }
 
 
               console.log(
+
                 "[PI AUTH] Existing account reconciled:",
+
                 {
+
                   user_id:
                     rows[0].id,
 
@@ -533,8 +599,14 @@ function reconcilePiUser(
                     rows[0].pi_username,
 
                   pi_uid:
-                    rows[0].pi_uid
+                    rows[0].pi_uid,
+
+                  wallet_address:
+                    rows[0].pi_wallet_address ||
+                    null
+
                 }
+
               );
 
 
@@ -557,20 +629,30 @@ function reconcilePiUser(
 }
 
 
+
 /* =========================================================
    CREATE NEW PI USER
 ========================================================= */
 
 function createNewPiUser({
+
   name,
+
   email,
+
   uid,
+
   username,
+
   walletAddress
+
 }) {
 
+
   return new Promise(
+
     (resolve, reject) => {
+
 
       db.query(
 
@@ -624,6 +706,7 @@ function createNewPiUser({
 
         (err, result) => {
 
+
           if (err) {
 
             return reject(err);
@@ -642,6 +725,7 @@ function createNewPiUser({
 
             (err2, rows) => {
 
+
               if (err2) {
 
                 return reject(err2);
@@ -652,9 +736,11 @@ function createNewPiUser({
               if (!rows.length) {
 
                 return reject(
+
                   new Error(
                     "Created Pi user could not be retrieved"
                   )
+
                 );
 
               }
@@ -679,13 +765,17 @@ function createNewPiUser({
 }
 
 
+
 /* =========================================================
    PI-FIRST VENDOR APPLICATION
 ========================================================= */
 
 router.post(
+
   "/vendor-register",
+
   async (req, res) => {
+
 
     const {
 
@@ -699,17 +789,10 @@ router.post(
 
       business_location,
 
-      business_description,
-
-      /*
-       * Kept for compatibility with your existing frontend.
-       *
-       * We do NOT trust this as the authoritative wallet
-       * when Pi supplies wallet_address through /me.
-       */
-      pi_wallet_address
+      business_description
 
     } = req.body || {};
+
 
 
     /* =====================================================
@@ -717,15 +800,21 @@ router.post(
     ===================================================== */
 
     if (
+
       !accessToken ||
+
       !name ||
+
       !business_name ||
+
       !business_location
+
     ) {
 
       return res.status(400).json({
 
-        success: false,
+        success:
+          false,
 
         message:
           "Pi authentication, name, business name and business location are required"
@@ -735,10 +824,12 @@ router.post(
     }
 
 
+
     try {
 
+
       /* ===================================================
-         VERIFY PI ACCOUNT
+         VERIFY PI
       =================================================== */
 
       const piUser =
@@ -761,9 +852,15 @@ router.post(
 
 
       /*
-       * A vendor payout must use the wallet returned by Pi.
-       * Never accept a wallet address typed into the form as
-       * a substitute for Pi authorization.
+       * IMPORTANT:
+       *
+       * We do NOT accept a manually typed wallet address.
+       *
+       * If Pi provides wallet_address, save it.
+       * Otherwise leave it NULL.
+       *
+       * Vendor registration itself does NOT fail because
+       * the wallet is unavailable.
        */
 
       const walletAddress =
@@ -771,52 +868,41 @@ router.post(
         null;
 
 
-      if (
-        !hasPiScope(
-          piUser,
-          "wallet_address"
-        ) ||
-        !walletAddress
-      ) {
-
-        return res.status(403).json({
-
-          success: false,
-
-          code: "PI_WALLET_SCOPE_REQUIRED",
-
-          message:
-            "Pi wallet permission is required for vendor payouts. Please authenticate again in Pi Browser and allow wallet address access."
-
-        });
-
-      }
-
 
       /* ===================================================
-         FIND EXISTING PI USER
+         FIND EXISTING USER
       =================================================== */
 
       let match;
+
 
       try {
 
         match =
           await findExistingPiUser(
+
             uid,
+
             username
+
           );
 
       } catch (lookupError) {
 
+
         console.error(
+
           "[PI AUTH] Vendor lookup error:",
+
           lookupError
+
         );
+
 
         return res.status(500).json({
 
-          success: false,
+          success:
+            false,
 
           message:
             "Database error while finding Pi account"
@@ -826,13 +912,16 @@ router.post(
       }
 
 
+
       /* ===================================================
          NEW PI USER
       =================================================== */
 
       if (!match.user) {
 
+
         try {
+
 
           const newUser =
             await createNewPiUser({
@@ -851,10 +940,6 @@ router.post(
             });
 
 
-          /*
-           * Convert the new user into a pending vendor
-           * application.
-           */
 
           db.query(
 
@@ -900,18 +985,25 @@ router.post(
 
             ],
 
-            (updateError) => {
+            updateError => {
+
 
               if (updateError) {
 
+
                 console.error(
+
                   "Vendor application update:",
+
                   updateError
+
                 );
+
 
                 return res.status(500).json({
 
-                  success: false,
+                  success:
+                    false,
 
                   message:
                     "Failed to submit vendor application"
@@ -923,7 +1015,8 @@ router.post(
 
               return res.status(201).json({
 
-                success: true,
+                success:
+                  true,
 
                 message:
                   "Vendor application submitted. Wait for Admin approval.",
@@ -940,72 +1033,94 @@ router.post(
 
           );
 
+
           return;
+
 
         } catch (insertError) {
 
-          /*
-           * This protects against a race condition where
-           * another request created the same username between
-           * our SELECT and INSERT.
-           */
 
           console.error(
+
             "[PI AUTH] Pi user insert:",
+
             insertError
+
           );
 
 
+          /*
+           * Race-condition / duplicate recovery.
+           */
+
           if (
+
             insertError.code ===
             "ER_DUP_ENTRY"
+
           ) {
 
-            /*
-             * Race-safe migration recovery. The username may
-             * already belong to the old Testnet account. Find
-             * it again and let the normal reconciliation path
-             * update its UID/wallet instead of creating a new
-             * user.
-             */
+
             try {
+
 
               match =
                 await findExistingPiUser(
+
                   uid,
+
                   username
+
                 );
 
-              if (match.user) {
-                /* Continue below with the existing account. */
-              } else {
+
+              if (!match.user) {
+
                 return res.status(409).json({
-                  success: false,
+
+                  success:
+                    false,
+
                   message:
-                    "A Pi account with this username already exists. Please authenticate again so the existing account can be linked."
+                    "A Pi account with this username already exists. Please authenticate again."
+
                 });
+
               }
+
 
             } catch (recoverError) {
 
+
               console.error(
-                "[PI AUTH] Duplicate Pi account recovery failed:",
+
+                "[PI AUTH] Duplicate recovery failed:",
+
                 recoverError
+
               );
 
+
               return res.status(500).json({
-                success: false,
+
+                success:
+                  false,
+
                 message:
                   "Unable to reconcile the existing Pi account"
+
               });
 
             }
 
+
           } else {
+
 
             return res.status(500).json({
 
-              success: false,
+              success:
+                false,
 
               message:
                 "Failed to create Pi user"
@@ -1019,43 +1134,57 @@ router.post(
       }
 
 
+
       /* ===================================================
-         EXISTING USER FOUND
+         EXISTING USER
       =================================================== */
 
       let user =
         match.user;
 
 
+
       /* ===================================================
-         RECONCILE MAINNET UID
+         RECONCILE UID / USERNAME / WALLET
       =================================================== */
 
       try {
 
+
         user =
           await reconcilePiUser(
+
             user,
+
             piUser
+
           );
+
 
       } catch (reconcileError) {
 
+
         console.error(
-          "[PI AUTH] Vendor account reconciliation error:",
+
+          "[PI AUTH] Vendor reconciliation error:",
+
           reconcileError
+
         );
+
 
         return res.status(500).json({
 
-          success: false,
+          success:
+            false,
 
           message:
-            "Failed to update your Pi account for Mainnet"
+            "Failed to update your Pi account"
 
         });
 
       }
+
 
 
       /* ===================================================
@@ -1063,12 +1192,14 @@ router.post(
       =================================================== */
 
       if (
-        user.role === "admin"
+        user.role ===
+        "admin"
       ) {
 
         return res.status(403).json({
 
-          success: false,
+          success:
+            false,
 
           message:
             "Administrator accounts cannot register as vendors"
@@ -1078,18 +1209,25 @@ router.post(
       }
 
 
+
       /* ===================================================
          ALREADY APPROVED VENDOR
       =================================================== */
 
       if (
-        user.role === "vendor" &&
-        user.vendor_status === "approved"
+
+        user.role ===
+          "vendor" &&
+
+        user.vendor_status ===
+          "approved"
+
       ) {
 
         return res.status(409).json({
 
-          success: false,
+          success:
+            false,
 
           message:
             "This Pi account is already an approved vendor"
@@ -1099,17 +1237,22 @@ router.post(
       }
 
 
+
       /* ===================================================
          APPLICATION ALREADY PENDING
       =================================================== */
 
       if (
-        user.vendor_status === "pending"
+
+        user.vendor_status ===
+        "pending"
+
       ) {
 
         return res.status(409).json({
 
-          success: false,
+          success:
+            false,
 
           message:
             "Vendor application is already pending"
@@ -1119,8 +1262,9 @@ router.post(
       }
 
 
+
       /* ===================================================
-         RE-SUBMIT VENDOR APPLICATION
+         RE-SUBMIT APPLICATION
       =================================================== */
 
       db.query(
@@ -1137,7 +1281,19 @@ router.post(
 
           business_description=?,
 
-          pi_wallet_address=?,
+          /*
+           * Only replace the wallet with the verified
+           * Pi wallet when Pi actually supplied one.
+           *
+           * Existing wallet remains intact otherwise.
+           */
+
+          pi_wallet_address =
+            CASE
+              WHEN ? IS NOT NULL AND ? <> ''
+              THEN ?
+              ELSE pi_wallet_address
+            END,
 
           vendor_applied_at=CURRENT_TIMESTAMP,
 
@@ -1163,22 +1319,35 @@ router.post(
 
           walletAddress,
 
+          walletAddress ||
+            "",
+
+          walletAddress ||
+            "",
+
           user.id
 
         ],
 
         e => {
 
+
           if (e) {
 
+
             console.error(
+
               "Vendor update:",
+
               e
+
             );
+
 
             return res.status(500).json({
 
-              success: false,
+              success:
+                false,
 
               message:
                 "Failed to submit vendor application"
@@ -1190,7 +1359,8 @@ router.post(
 
           return res.json({
 
-            success: true,
+            success:
+              true,
 
             message:
               "Vendor application submitted. Wait for Admin approval.",
@@ -1206,6 +1376,7 @@ router.post(
 
     } catch (error) {
 
+
       console.error(
 
         "Vendor Pi registration:",
@@ -1218,7 +1389,8 @@ router.post(
 
       return res.status(401).json({
 
-        success: false,
+        success:
+          false,
 
         message:
           "Pi authentication failed"
@@ -1232,23 +1404,30 @@ router.post(
 );
 
 
+
 /* =========================================================
    PI USER LOGIN
 ========================================================= */
 
 router.post(
+
   "/pi-login",
+
   async (req, res) => {
+
 
     try {
 
+
       /* ===================================================
-         VERIFY PI ACCOUNT
+         VERIFY PI
       =================================================== */
 
       const piUser =
         await verifyPiAccount(
+
           req.body?.accessToken
+
         );
 
 
@@ -1265,33 +1444,43 @@ router.post(
         `${uid}@pi.app`;
 
 
+
       /* ===================================================
          FIND EXISTING USER
-
-         FIRST BY UID
-         THEN BY USERNAME FOR MIGRATION
       =================================================== */
 
       let match;
 
+
       try {
+
 
         match =
           await findExistingPiUser(
+
             uid,
+
             username
+
           );
+
 
       } catch (lookupError) {
 
+
         console.error(
+
           "Pi login lookup:",
+
           lookupError
+
         );
+
 
         return res.status(500).json({
 
-          success: false,
+          success:
+            false,
 
           message:
             "Database error"
@@ -1301,44 +1490,52 @@ router.post(
       }
 
 
+
       /* ===================================================
          EXISTING USER
       =================================================== */
 
       if (match.user) {
 
+
         let user =
           match.user;
 
 
-        /*
-         * MAINNET MIGRATION:
-         *
-         * If this account was found by username,
-         * replace the old Testnet UID with the current
-         * verified Mainnet UID.
-         *
-         * Existing account data remains untouched.
-         */
+
+        /* ===============================================
+           TESTNET -> MAINNET RECONCILIATION
+        ================================================ */
 
         try {
 
+
           user =
             await reconcilePiUser(
+
               user,
+
               piUser
+
             );
+
 
         } catch (reconcileError) {
 
+
           console.error(
+
             "Pi login reconciliation:",
+
             reconcileError
+
           );
+
 
           return res.status(500).json({
 
-            success: false,
+            success:
+              false,
 
             message:
               "Failed to update your Pi account for Mainnet"
@@ -1348,44 +1545,42 @@ router.post(
         }
 
 
-        /* =============================================
-           VENDOR WALLET PERMISSION
-        ============================================= */
+
+        /*
+         * IMPORTANT CORRECTION:
+         *
+         * DO NOT reject an approved vendor here merely
+         * because wallet_address is missing.
+         *
+         * Login and payout are separate operations.
+         *
+         * The vendor is allowed to enter the dashboard.
+         *
+         * The payout endpoint should check the wallet when
+         * the vendor payout is actually requested.
+         */
+
+
+
+        /* ===============================================
+           ACCOUNT STATUS
+        ================================================ */
 
         if (
-          user.role === "vendor" &&
-          user.vendor_status === "approved" &&
-          !piUser.wallet_address
+
+          user.status !==
+          "approved"
+
         ) {
+
 
           return res.status(403).json({
 
-            success: false,
-
-            code:
-              "PI_WALLET_SCOPE_REQUIRED",
+            success:
+              false,
 
             message:
-              "Your vendor account needs Pi wallet permission. Please authenticate again in Pi Browser and allow wallet address access before using vendor payouts."
 
-          });
-
-        }
-
-
-        /* =============================================
-           CHECK ACCOUNT STATUS
-        ============================================= */
-
-        if (
-          user.status !== "approved"
-        ) {
-
-          return res.status(403).json({
-
-            success: false,
-
-            message:
               user.vendor_status ===
               "pending"
 
@@ -1398,13 +1593,17 @@ router.post(
         }
 
 
-        /* =============================================
-           SUCCESSFUL PI LOGIN
-        ============================================= */
+
+        /* ===============================================
+           LOGIN SUCCESS
+        ================================================ */
 
         console.log(
+
           "[PI AUTH] Existing Pi user login:",
+
           {
+
             id:
               user.id,
 
@@ -1418,24 +1617,37 @@ router.post(
               user.admin_level,
 
             vendor_status:
-              user.vendor_status
+              user.vendor_status,
+
+            wallet_available:
+              Boolean(
+                user.pi_wallet_address
+              )
+
           }
+
         );
 
 
         return res.json({
 
-          success: true,
+          success:
+            true,
 
           token:
-            createToken(user),
+            createToken(
+              user
+            ),
 
           user:
-            publicUser(user)
+            publicUser(
+              user
+            )
 
         });
 
       }
+
 
 
       /* ===================================================
@@ -1443,6 +1655,7 @@ router.post(
       =================================================== */
 
       try {
+
 
         const user =
           await createNewPiUser({
@@ -1465,84 +1678,141 @@ router.post(
 
         return res.json({
 
-          success: true,
+          success:
+            true,
 
           token:
-            createToken(user),
+            createToken(
+              user
+            ),
 
           user:
-            publicUser(user)
+            publicUser(
+              user
+            )
 
         });
 
+
       } catch (insertError) {
 
+
         console.error(
+
           "Pi user insert:",
+
           insertError
+
         );
 
 
-        /*
-         * If the username already exists, this means the
-         * account was created under the old UID/network.
-         *
-         * Tell the client to retry, while keeping the
-         * database safe.
-         */
+
+        /* ===============================================
+           DUPLICATE RECOVERY
+        ================================================ */
 
         if (
+
           insertError.code ===
           "ER_DUP_ENTRY"
+
         ) {
+
 
           try {
 
+
             const recovered =
               await findExistingPiUser(
+
                 uid,
+
                 username
+
               );
+
 
             if (recovered.user) {
 
+
               const recoveredUser =
                 await reconcilePiUser(
+
                   recovered.user,
+
                   piUser
+
                 );
 
-              if (recoveredUser.status !== "approved") {
+
+              if (
+
+                recoveredUser.status !==
+                "approved"
+
+              ) {
+
                 return res.status(403).json({
-                  success: false,
+
+                  success:
+                    false,
+
                   message:
-                    recoveredUser.vendor_status === "pending"
+
+                    recoveredUser.vendor_status ===
+                    "pending"
+
                       ? "Your vendor application is awaiting Admin approval."
+
                       : "Account is not approved"
+
                 });
+
               }
 
+
               return res.json({
-                success: true,
-                token: createToken(recoveredUser),
-                user: publicUser(recoveredUser)
+
+                success:
+                  true,
+
+                token:
+                  createToken(
+                    recoveredUser
+                  ),
+
+                user:
+                  publicUser(
+                    recoveredUser
+                  )
+
               });
 
             }
 
+
           } catch (recoverError) {
 
+
             console.error(
+
               "Pi login duplicate recovery:",
+
               recoverError
+
             );
 
           }
 
+
           return res.status(409).json({
-            success: false,
+
+            success:
+              false,
+
             message:
               "Your existing Pi account could not be reconciled. Please try Pi login again."
+
           });
 
         }
@@ -1550,7 +1820,8 @@ router.post(
 
         return res.status(500).json({
 
-          success: false,
+          success:
+            false,
 
           message:
             "Failed to create Pi user"
@@ -1559,7 +1830,9 @@ router.post(
 
       }
 
+
     } catch (error) {
+
 
       console.error(
 
@@ -1573,7 +1846,8 @@ router.post(
 
       return res.status(401).json({
 
-        success: false,
+        success:
+          false,
 
         message:
           "Pi authentication failed"
@@ -1587,23 +1861,30 @@ router.post(
 );
 
 
+
 /* =========================================================
    PI ADMINISTRATOR LOGIN
 ========================================================= */
 
 router.post(
+
   "/pi-admin-login",
+
   async (req, res) => {
+
 
     try {
 
+
       /* ===================================================
-         VERIFY PI ACCOUNT
+         VERIFY PI
       =================================================== */
 
       const piUser =
         await verifyPiAccount(
+
           req.body?.accessToken
+
         );
 
 
@@ -1616,36 +1897,43 @@ router.post(
         "Pi User";
 
 
+
       /* ===================================================
-         FIND EXISTING PI USER
-
-         FIRST BY UID
-         THEN BY USERNAME
-
-         This is critical for your existing Super Admin
-         after Testnet -> Mainnet migration.
+         FIND EXISTING ADMIN
       =================================================== */
 
       let match;
 
+
       try {
+
 
         match =
           await findExistingPiUser(
+
             uid,
+
             username
+
           );
+
 
       } catch (lookupError) {
 
+
         console.error(
+
           "Pi admin lookup:",
+
           lookupError
+
         );
+
 
         return res.status(500).json({
 
-          success: false,
+          success:
+            false,
 
           message:
             "Database error"
@@ -1655,40 +1943,52 @@ router.post(
       }
 
 
+
       /* ===================================================
          EXISTING ACCOUNT
       =================================================== */
 
       if (match.user) {
 
+
         let user =
           match.user;
 
 
-        /*
-         * MAINNET MIGRATION:
-         *
-         * Reconnect old Testnet UID to current Mainnet UID.
-         */
+
+        /* ===============================================
+           TESTNET -> MAINNET RECONCILIATION
+        ================================================ */
 
         try {
 
+
           user =
             await reconcilePiUser(
+
               user,
+
               piUser
+
             );
+
 
         } catch (reconcileError) {
 
+
           console.error(
+
             "Pi admin reconciliation:",
+
             reconcileError
+
           );
+
 
           return res.status(500).json({
 
-            success: false,
+            success:
+              false,
 
             message:
               "Failed to update administrator account for Mainnet"
@@ -1698,18 +1998,22 @@ router.post(
         }
 
 
-        /* =============================================
+
+        /* ===============================================
            ACCOUNT STATUS
-        ============================================= */
+        ================================================ */
 
         if (
+
           user.status !==
           "approved"
+
         ) {
 
           return res.status(403).json({
 
-            success: false,
+            success:
+              false,
 
             message:
               "Administrator account is not approved"
@@ -1719,14 +2023,15 @@ router.post(
         }
 
 
-        /* =============================================
+
+        /* ===============================================
            ADMIN AUTHORIZATION
-        ============================================= */
+        ================================================ */
 
         if (
 
           user.role !==
-            "admin" ||
+          "admin" ||
 
           ![
             "super_admin",
@@ -1740,7 +2045,8 @@ router.post(
 
           return res.status(403).json({
 
-            success: false,
+            success:
+              false,
 
             message:
               "This Pi account is not authorized for the Admin Panel"
@@ -1750,9 +2056,13 @@ router.post(
         }
 
 
+
         console.log(
+
           "[PI ADMIN] Administrator login successful:",
+
           {
+
             id:
               user.id,
 
@@ -1761,15 +2071,19 @@ router.post(
 
             admin_level:
               user.admin_level
+
           }
+
         );
 
 
         return res.json({
 
-          success: true,
+          success:
+            true,
 
           message:
+
             user.admin_level ===
             "super_admin"
 
@@ -1778,32 +2092,46 @@ router.post(
               : "Administrator login successful",
 
           token:
-            createToken(user),
+            createToken(
+              user
+            ),
 
           user:
-            publicUser(user)
+            publicUser(
+              user
+            )
 
         });
 
       }
 
 
+
       /* ===================================================
          FIRST SUPER ADMIN AUTHORIZATION
-      =================================================== */
+      ==================================================== */
 
       if (
 
         !PI_SUPER_ADMIN_USERNAME ||
 
-        String(username).toLowerCase() !==
-          String(PI_SUPER_ADMIN_USERNAME).trim().toLowerCase()
+        String(username)
+          .trim()
+          .toLowerCase() !==
+
+        String(
+          PI_SUPER_ADMIN_USERNAME
+        )
+          .trim()
+          .toLowerCase()
 
       ) {
 
+
         return res.status(403).json({
 
-          success: false,
+          success:
+            false,
 
           message:
             "This Pi account is not an authorized administrator"
@@ -1813,19 +2141,25 @@ router.post(
       }
 
 
+
       const email =
         `${uid}@pi.app`;
 
 
+
       /* ===================================================
          CREATE SUPER ADMIN
-      =================================================== */
+      ==================================================== */
 
       try {
 
+
         const user =
+
           await new Promise(
+
             (resolve, reject) => {
+
 
               db.query(
 
@@ -1879,6 +2213,7 @@ router.post(
 
                 (e, r) => {
 
+
                   if (e) {
 
                     return reject(e);
@@ -1897,6 +2232,7 @@ router.post(
 
                     (e2, rows2) => {
 
+
                       if (e2) {
 
                         return reject(e2);
@@ -1904,14 +2240,14 @@ router.post(
                       }
 
 
-                      if (
-                        !rows2.length
-                      ) {
+                      if (!rows2.length) {
 
                         return reject(
+
                           new Error(
                             "Super Admin fetch failed"
                           )
+
                         );
 
                       }
@@ -1936,51 +2272,84 @@ router.post(
 
         return res.json({
 
-          success: true,
+          success:
+            true,
 
           message:
             "Super Admin created successfully",
 
           token:
-            createToken(user),
+            createToken(
+              user
+            ),
 
           user:
-            publicUser(user)
+            publicUser(
+              user
+            )
 
         });
 
+
       } catch (adminInsertError) {
 
+
         console.error(
+
           "Super Admin insert:",
+
           adminInsertError
+
         );
 
 
+
+        /* ===============================================
+           DUPLICATE RECOVERY
+        ================================================ */
+
         if (
+
           adminInsertError.code ===
           "ER_DUP_ENTRY"
+
         ) {
+
 
           try {
 
+
             const recovered =
               await findExistingPiUser(
+
                 uid,
+
                 username
+
               );
+
 
             if (recovered.user) {
 
+
               const recoveredUser =
                 await reconcilePiUser(
+
                   recovered.user,
+
                   piUser
+
                 );
 
+
               if (
-                recoveredUser.status === "approved" &&
-                recoveredUser.role === "admin" &&
+
+                recoveredUser.status ===
+                  "approved" &&
+
+                recoveredUser.role ===
+                  "admin" &&
+
                 [
                   "super_admin",
                   "admin",
@@ -1988,35 +2357,63 @@ router.post(
                 ].includes(
                   recoveredUser.admin_level
                 )
+
               ) {
 
+
                 return res.json({
-                  success: true,
+
+                  success:
+                    true,
+
                   message:
-                    recoveredUser.admin_level === "super_admin"
+
+                    recoveredUser.admin_level ===
+                    "super_admin"
+
                       ? "Super Admin login successful"
+
                       : "Administrator login successful",
-                  token: createToken(recoveredUser),
-                  user: publicUser(recoveredUser)
+
+                  token:
+                    createToken(
+                      recoveredUser
+                    ),
+
+                  user:
+                    publicUser(
+                      recoveredUser
+                    )
+
                 });
 
               }
 
             }
 
+
           } catch (recoverError) {
 
+
             console.error(
+
               "Pi admin duplicate recovery:",
+
               recoverError
+
             );
 
           }
 
+
           return res.status(409).json({
-            success: false,
+
+            success:
+              false,
+
             message:
               "The Pi administrator account already exists but could not be reconciled automatically."
+
           });
 
         }
@@ -2024,7 +2421,8 @@ router.post(
 
         return res.status(500).json({
 
-          success: false,
+          success:
+            false,
 
           message:
             "Failed to create Super Admin"
@@ -2033,7 +2431,9 @@ router.post(
 
       }
 
+
     } catch (error) {
+
 
       console.error(
 
@@ -2047,7 +2447,8 @@ router.post(
 
       return res.status(401).json({
 
-        success: false,
+        success:
+          false,
 
         message:
           "Pi account verification failed"
@@ -2061,8 +2462,10 @@ router.post(
 );
 
 
+
 /* =========================================================
    EXPORT ROUTER
 ========================================================= */
 
-module.exports = router;
+module.exports =
+  router;
