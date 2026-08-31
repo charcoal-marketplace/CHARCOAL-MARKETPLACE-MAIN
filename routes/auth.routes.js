@@ -172,18 +172,6 @@ function getVerifiedPiWalletAddress(
   suppliedWalletAddress = null
 ) {
 
-  /*
-   * IMPORTANT:
-   *
-   * The old implementation did not require the
-   * credentials.scopes field to exist.
-   *
-   * Some Pi responses/tokens may not expose the
-   * scopes array in the shape expected here.
-   *
-   * Therefore we first use the wallet address
-   * returned directly by Pi.
-   */
 
   const piWallet =
     normalizeWalletAddress(
@@ -194,16 +182,6 @@ function getVerifiedPiWalletAddress(
     return piWallet;
   }
 
-
-  /*
-   * If Pi did not return the wallet address,
-   * preserve a valid wallet address already
-   * supplied by the authenticated vendor.
-   *
-   * This is especially important for existing
-   * vendor accounts whose wallet address is
-   * already stored in MySQL.
-   */
 
   const supplied =
     normalizeWalletAddress(
@@ -324,21 +302,6 @@ function reconcilePiUser(
         user.pi_username ||
         null;
 
-
-      /*
-       * FIX:
-       *
-       * The previous version referenced
-       * "suppliedWalletAddress" without defining it.
-       *
-       * That caused:
-       *
-       * ReferenceError:
-       * suppliedWalletAddress is not defined
-       *
-       * and was then incorrectly reported as
-       * "Failed to update ... for Mainnet".
-       */
 
       const walletAddress =
         getVerifiedPiWalletAddress(
@@ -599,260 +562,6 @@ function createNewPiUser({
 
 
 /* =========================================================
-   LEGACY EMAIL / PASSWORD REGISTER
-   KEEP THIS FOR EXISTING DEPLOYMENTS
-========================================================= */
-
-router.post(
-  "/register",
-  async (req, res) => {
-
-    const {
-      name,
-      email,
-      password
-    } = req.body || {};
-
-
-    if (
-      !name ||
-      !email ||
-      !password
-    ) {
-
-      return res.status(400).json({
-        success: false,
-        message: "All fields required"
-      });
-
-    }
-
-
-    db.query(
-      `SELECT id
-       FROM users
-       WHERE email=?
-       LIMIT 1`,
-      [email],
-      async (err, rows) => {
-
-        if (err) {
-
-          return res.status(500).json({
-            success: false,
-            message: "Database error"
-          });
-
-        }
-
-
-        if (rows.length) {
-
-          return res.status(409).json({
-            success: false,
-            message: "Email already exists"
-          });
-
-        }
-
-
-        try {
-
-          const hashed =
-            await bcrypt.hash(
-              password,
-              10
-            );
-
-
-          db.query(
-            `INSERT INTO users
-             (
-               name,
-               email,
-               password,
-               role,
-               status,
-               admin_level,
-               vendor_status
-             )
-             VALUES
-             (
-               ?,
-               ?,
-               ?,
-               ?,
-               ?,
-               ?,
-               ?
-             )`,
-            [
-              name,
-              email,
-              hashed,
-              "vendor",
-              "pending",
-              "none",
-              "pending"
-            ],
-            err2 => {
-
-              if (err2) {
-
-                return res.status(500).json({
-                  success: false,
-                  message: "Register failed"
-                });
-
-              }
-
-
-              return res.status(201).json({
-                success: true,
-                message:
-                  "Vendor submitted for approval"
-              });
-
-            }
-          );
-
-        } catch (hashError) {
-
-          return res.status(500).json({
-            success: false,
-            message: "Encryption error"
-          });
-
-        }
-
-      }
-    );
-
-  }
-);
-
-
-/* =========================================================
-   LEGACY EMAIL / PASSWORD LOGIN
-========================================================= */
-
-router.post(
-  "/login",
-  (req, res) => {
-
-    const {
-      email,
-      password
-    } = req.body || {};
-
-
-    if (
-      !email ||
-      !password
-    ) {
-
-      return res.status(400).json({
-        success: false,
-        message: "Missing fields"
-      });
-
-    }
-
-
-    db.query(
-      `SELECT *
-       FROM users
-       WHERE email=?
-       LIMIT 1`,
-      [email],
-      async (err, rows) => {
-
-        if (err) {
-
-          return res.status(500).json({
-            success: false,
-            message: "Database error"
-          });
-
-        }
-
-
-        if (!rows.length) {
-
-          return res.status(401).json({
-            success: false,
-            message: "User not found"
-          });
-
-        }
-
-
-        const user =
-          rows[0];
-
-
-        if (
-          user.status !==
-          "approved"
-        ) {
-
-          return res.status(403).json({
-            success: false,
-            message: "Account not approved"
-          });
-
-        }
-
-
-        /*
-         * Some old Pi-created users may have no
-         * usable password. Do not crash.
-         */
-
-        if (!user.password) {
-
-          return res.status(401).json({
-            success: false,
-            message:
-              "Password login is not available for this account. Please use Pi login."
-          });
-
-        }
-
-
-        const valid =
-          await bcrypt.compare(
-            password,
-            user.password
-          );
-
-
-        if (!valid) {
-
-          return res.status(401).json({
-            success: false,
-            message: "Wrong password"
-          });
-
-        }
-
-
-        return res.json({
-          success: true,
-          token:
-            createToken(user),
-          user:
-            publicUser(user)
-        });
-
-      }
-    );
-
-  }
-);
-
-
-/* =========================================================
    PI-FIRST VENDOR APPLICATION
 ========================================================= */
 
@@ -1081,32 +790,6 @@ router.post(
           }
 
         }
-
-      }
-
-
-      /* ===============================================
-         EXISTING USER
-      ================================================ */
-
-      let user =
-        match.user;
-
-
-      /*
-       * Administrator accounts must not be converted
-       * into vendors.
-       */
-
-      if (
-        user.role === "admin"
-      ) {
-
-        return res.status(403).json({
-          success: false,
-          message:
-            "Administrator accounts cannot register as vendors"
-        });
 
       }
 
@@ -1627,15 +1310,6 @@ router.post(
 
         let user =
           match.user;
-
-
-        /*
-         * FIXED RECONCILIATION.
-         *
-         * We preserve an already stored wallet if
-         * Pi does not return wallet_address during
-         * this login.
-         */
 
         try {
 
