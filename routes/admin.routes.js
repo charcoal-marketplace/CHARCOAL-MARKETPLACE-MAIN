@@ -3207,31 +3207,6 @@ router.post(
 
 
       /* =====================================================
-         VENDOR WALLET AUTHORIZATION
-      ===================================================== */
-
-      if (
-        !earning.pi_wallet_address
-      ) {
-
-        await connection.rollback();
-
-        return res.status(409).json({
-
-          success: false,
-
-          code:
-            "PI_WALLET_SCOPE_REQUIRED",
-
-          message:
-            "Vendor has no verified Pi wallet address. Ask the vendor to sign in again in Pi Browser and allow wallet address access."
-
-        });
-
-      }
-
-
-      /* =====================================================
          VENDOR STATUS
       ===================================================== */
 

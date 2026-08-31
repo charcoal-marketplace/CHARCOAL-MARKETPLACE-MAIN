@@ -231,6 +231,7 @@ async function verifyPiAccount(
         piUser.username,
 
       wallet_address:
+        walletAddress ||
         piUser.wallet_address ||
         null
 
@@ -242,19 +243,80 @@ async function verifyPiAccount(
 
 }
 
+/* =========================================================
+   VERIFIED PI WALLET ADDRESS
+========================================================= */
+
+function getVerifiedPiWalletAddress(
+  piUser,
+  suppliedWalletAddress
+) {
+
+  const scopes =
+    piUser?.credentials?.scopes;
+
+  /*
+   * The Platform API should tell us which permissions
+   * were granted to this access token.
+   */
+  const walletScopeGranted =
+    Array.isArray(scopes) &&
+    scopes.includes(
+      "wallet_address"
+    );
+
+
+  if (!walletScopeGranted) {
+
+    return null;
+
+  }
+
+
+  const walletAddress =
+    piUser?.wallet_address ||
+    suppliedWalletAddress ||
+    null;
+
+
+  if (!walletAddress) {
+
+    return null;
+
+  }
+
+
+  const normalized =
+    String(
+      walletAddress
+    ).trim();
+
+
+  /*
+   * Pi wallet addresses are Stellar public addresses.
+   */
+  if (
+    !/^G[A-Z2-7]{55}$/.test(
+      normalized
+    )
+  ) {
+
+    console.warn(
+      "[PI AUTH] Invalid Pi wallet address received."
+    );
+
+    return null;
+
+  }
+
+
+  return normalized;
+
+}
 
 
 /* =========================================================
    FIND EXISTING PI USER
-=========================================================
-
-   Testnet -> Mainnet migration:
-
-   1. Search current UID.
-   2. If not found, search username.
-   3. If username matches an old account, reconcile it
-      with the current UID.
-
 ========================================================= */
 
 function findExistingPiUser(
@@ -415,8 +477,10 @@ function reconcilePiUser(
        */
 
       const walletAddress =
-        piUser.wallet_address ||
-        null;
+  getVerifiedPiWalletAddress(
+    piUser,
+    pi_wallet_address
+  );
 
 
       const fields = [];
@@ -789,7 +853,9 @@ router.post(
 
       business_location,
 
-      business_description
+      business_description,
+
+      pi_wallet_address
 
     } = req.body || {};
 
@@ -833,9 +899,15 @@ router.post(
       =================================================== */
 
       const piUser =
-        await verifyPiAccount(
-          accessToken
-        );
+  await verifyPiAccount(
+    req.body?.accessToken
+  );
+
+const walletAddress =
+  getVerifiedPiWalletAddress(
+    piUser,
+    req.body?.pi_wallet_address
+  );
 
 
       const uid =
@@ -848,25 +920,14 @@ router.post(
 
 
       const email =
-        `${uid}@pi.app`;
-
-
-      /*
-       * IMPORTANT:
-       *
-       * We do NOT accept a manually typed wallet address.
-       *
-       * If Pi provides wallet_address, save it.
-       * Otherwise leave it NULL.
-       *
-       * Vendor registration itself does NOT fail because
-       * the wallet is unavailable.
-       */
+        `${uid}@pi.app`
+      
 
       const walletAddress =
-        piUser.wallet_address ||
-        null;
-
+  getVerifiedPiWalletAddress(
+    piUser,
+    pi_wallet_address
+  );
 
 
       /* ===================================================
@@ -1152,13 +1213,17 @@ router.post(
 
 
         user =
-          await reconcilePiUser(
+      await reconcilePiUser(
+  user,
+  {
+    ...piUser,
 
-            user,
-
-            piUser
-
-          );
+    wallet_address:
+      walletAddress ||
+      piUser.wallet_address ||
+      null
+  }
+);
 
 
       } catch (reconcileError) {
@@ -1185,28 +1250,6 @@ router.post(
 
       }
 
-
-
-      /* ===================================================
-         ADMIN CANNOT BECOME VENDOR
-      =================================================== */
-
-      if (
-        user.role ===
-        "admin"
-      ) {
-
-        return res.status(403).json({
-
-          success:
-            false,
-
-          message:
-            "Administrator accounts cannot register as vendors"
-
-        });
-
-      }
 
 
 
