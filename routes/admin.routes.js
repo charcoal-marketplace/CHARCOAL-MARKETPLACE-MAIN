@@ -3,7 +3,8 @@ const router = require("express").Router();
 const db = require("../config/db");
 
 const {
-  verifyAdmin
+  verifyAdmin,
+  requireSuperAdmin
 } = require("../middleware/auth.middleware");
 
 const {
@@ -54,6 +55,15 @@ function requireSuperAdmin(req, res, next) {
 /* =========================================================
    ADMIN IDENTITY
    GET /api/admin/me
+
+   IMPORTANT:
+   An administrator may also be a vendor.
+   Admin access is controlled by:
+   role='admin'
+   + admin_level
+   + status='approved'
+
+   vendor_status does NOT remove admin access.
 ========================================================= */
 
 router.get(
@@ -72,6 +82,12 @@ router.get(
         pi_uid,
         pi_username,
         admin_level,
+        vendor_status,
+        business_name,
+        business_phone,
+        business_location,
+        business_description,
+        pi_wallet_address,
         created_at
       FROM users
       WHERE id = ?
@@ -139,7 +155,27 @@ router.get(
             pi_username: admin.pi_username,
             admin_level:
               admin.admin_level || "none",
-            created_at: admin.created_at
+
+            vendor_status:
+              admin.vendor_status || "none",
+
+            business_name:
+              admin.business_name || null,
+
+            business_phone:
+              admin.business_phone || null,
+
+            business_location:
+              admin.business_location || null,
+
+            business_description:
+              admin.business_description || null,
+
+            pi_wallet_address:
+              admin.pi_wallet_address || null,
+
+            created_at:
+              admin.created_at
           }
 
         });
@@ -185,11 +221,23 @@ router.get(
           Number(usersResult[0].count);
 
 
+        /*
+         * IMPORTANT:
+         * Vendor count is based on vendor_status.
+         *
+         * This means an account with:
+         *
+         * role='admin'
+         * vendor_status='approved'
+         *
+         * is correctly counted as a vendor.
+         */
+
         db.query(
           `
           SELECT COUNT(*) AS count
           FROM users
-          WHERE role = 'vendor'
+          WHERE vendor_status = 'approved'
           `,
 
           (err, vendorsResult) => {
@@ -368,28 +416,64 @@ router.get(
 /* =========================================================
    PENDING VENDORS
    GET /api/admin/vendors/pending
+
+   IMPORTANT:
+   Vendor approval is controlled by vendor_status,
+   not by role.
+
+   This allows an admin account to become a vendor
+   without changing role='admin'.
 ========================================================= */
 
 router.get(
   "/vendors/pending",
   verifyAdmin,
-  (req,res)=>{
+  (req, res) => {
+
     db.query(
-      `SELECT
-        id,name,email,role,status,pi_uid,pi_username,
-        vendor_status,business_name,business_phone,business_location,
-        business_description,vendor_applied_at
-       FROM users
-       WHERE vendor_status='pending'
-       ORDER BY vendor_applied_at DESC`,
-      (err,result)=>{
-        if(err){
+      `
+      SELECT
+        id,
+        name,
+        email,
+        role,
+        status,
+        pi_uid,
+        pi_username,
+        admin_level,
+        vendor_status,
+        business_name,
+        business_phone,
+        business_location,
+        business_description,
+        vendor_applied_at
+      FROM users
+      WHERE vendor_status = 'pending'
+      ORDER BY vendor_applied_at DESC
+      `,
+
+      (err, result) => {
+
+        if (err) {
+
           console.error(err);
-          return res.status(500).json({success:false,message:"Failed to load pending vendors"});
+
+          return res.status(500).json({
+            success: false,
+            message:
+              "Failed to load pending vendors"
+          });
+
         }
-        res.json(result||[]);
+
+
+        res.json(
+          result || []
+        );
+
       }
     );
+
   }
 );
 
@@ -398,8 +482,15 @@ router.get(
    ALL APPROVED / ACTIVE VENDORS
    GET /api/admin/vendors
 
-   Used by:
-   Admin Dashboard → Vendors
+   IMPORTANT:
+   Uses vendor_status rather than role.
+
+   Therefore:
+   role='vendor' + vendor_status='approved'
+   AND
+   role='admin' + vendor_status='approved'
+
+   are both vendors.
 ========================================================= */
 
 router.get(
@@ -418,6 +509,7 @@ router.get(
         pi_uid,
         pi_username,
         pi_wallet_address,
+        admin_level,
         vendor_status,
         business_name,
         business_phone,
@@ -427,7 +519,7 @@ router.get(
         vendor_reviewed_at,
         created_at
       FROM users
-      WHERE role = 'vendor'
+      WHERE vendor_status = 'approved'
       ORDER BY created_at DESC
       `,
       (err, vendors) => {
@@ -471,8 +563,23 @@ router.get(
    REVOKE VENDOR
    POST /api/admin/vendors/:id/revoke
 
-   Changes the vendor back to buyer and disables
-   the vendor's active products.
+   IMPORTANT:
+   If the vendor is also an administrator:
+
+   BEFORE:
+   role='admin'
+   admin_level='admin/super_admin'
+   vendor_status='approved'
+
+   AFTER:
+   role='admin'
+   admin_level='admin/super_admin'
+   vendor_status='rejected'
+
+   Therefore the administrator DOES NOT lose
+   admin dashboard access.
+
+   A normal vendor becomes buyer when revoked.
 ========================================================= */
 
 router.post(
@@ -523,6 +630,8 @@ router.post(
         id,
         name,
         role,
+        admin_level,
+        status,
         vendor_status
       FROM users
       WHERE id=?
@@ -569,7 +678,8 @@ router.post(
 
 
         if (
-          vendor.role !== "vendor"
+          vendor.vendor_status !==
+          "approved"
         ) {
 
           return res.status(400).json({
@@ -577,22 +687,33 @@ router.post(
             success: false,
 
             message:
-              "This account is not currently a vendor"
+              "This account is not currently an approved vendor"
 
           });
 
         }
 
 
-        /* ===============================================
-           REVOKE VENDOR ACCESS
-        =============================================== */
+        /*
+         * IMPORTANT:
+         *
+         * Preserve admin role if this vendor
+         * is also an administrator.
+         *
+         * Only normal vendors become buyers.
+         */
+
+        const preservedRole =
+          vendor.role === "admin"
+            ? "admin"
+            : "buyer";
+
 
         db.query(
           `
           UPDATE users
           SET
-            role='buyer',
+            role=?,
             vendor_status='rejected',
             vendor_reviewed_at=CURRENT_TIMESTAMP,
             vendor_reviewed_by=?,
@@ -600,6 +721,7 @@ router.post(
           WHERE id=?
           `,
           [
+            preservedRole,
             req.user.id,
             vendorId
           ],
@@ -718,6 +840,7 @@ router.post(
 
   }
 );
+
 
 /* =========================================================
    APPROVE PRODUCT
@@ -992,33 +1115,197 @@ router.post(
 /* =========================================================
    APPROVE VENDOR
    POST /api/admin/vendors/approve/:id
+
+   IMPORTANT:
+   If the applicant is already an administrator,
+   KEEP role='admin'.
+
+   Otherwise:
+   role='vendor'.
+
+   In both cases:
+   vendor_status='approved'.
 ========================================================= */
 
-router.post("/vendors/approve/:id",verifyAdmin,(req,res)=>{
-  const id=Number(req.params.id);
-  if(!Number.isInteger(id)) return res.status(400).json({success:false,message:"Invalid vendor ID"});
+router.post(
+  "/vendors/approve/:id",
+  verifyAdmin,
+  (req, res) => {
 
-  db.query(
-    `UPDATE users
-     SET role='vendor',status='approved',vendor_status='approved',
-         vendor_reviewed_at=CURRENT_TIMESTAMP,vendor_reviewed_by=?,
-         vendor_rejection_reason=NULL
-     WHERE id=? AND vendor_status='pending'`,
-    [req.user.id,id],
-    (err,result)=>{
-      if(err) return res.status(500).json({success:false,message:"Vendor approval failed"});
-      if(!result.affectedRows) return res.status(404).json({success:false,message:"Pending vendor not found"});
+    const id =
+      Number(req.params.id);
 
-      db.query(
-        `INSERT INTO notifications(user_id,message,type) VALUES (?,?,?)`,
-        [id,"Your vendor application has been approved 🎉","vendor"],
-        ()=>{}
-      );
 
-      res.json({success:true,message:"Vendor approved"});
+    if (
+      !Number.isInteger(id)
+    ) {
+
+      return res.status(400).json({
+        success: false,
+        message:
+          "Invalid vendor ID"
+      });
+
     }
-  );
-});
+
+
+    db.query(
+      `
+      SELECT
+        id,
+        name,
+        role,
+        admin_level,
+        status,
+        vendor_status
+      FROM users
+      WHERE id=?
+      AND vendor_status='pending'
+      LIMIT 1
+      `,
+      [id],
+
+      (lookupErr, users) => {
+
+        if (lookupErr) {
+
+          console.error(
+            "Vendor approval lookup error:",
+            lookupErr
+          );
+
+          return res.status(500).json({
+            success: false,
+            message:
+              "Vendor approval failed"
+          });
+
+        }
+
+
+        if (!users.length) {
+
+          return res.status(404).json({
+            success: false,
+            message:
+              "Pending vendor not found"
+          });
+
+        }
+
+
+        const applicant =
+          users[0];
+
+
+        /*
+         * CRITICAL:
+         *
+         * Admin remains admin.
+         * Super Admin remains admin.
+         * Normal buyer becomes vendor.
+         */
+
+        const newRole =
+          applicant.role === "admin"
+            ? "admin"
+            : "vendor";
+
+
+        db.query(
+          `
+          UPDATE users
+          SET
+            role=?,
+            status='approved',
+            vendor_status='approved',
+            vendor_reviewed_at=CURRENT_TIMESTAMP,
+            vendor_reviewed_by=?,
+            vendor_rejection_reason=NULL
+          WHERE id=?
+          AND vendor_status='pending'
+          `,
+          [
+            newRole,
+            req.user.id,
+            id
+          ],
+
+          (err, result) => {
+
+            if (err) {
+
+              console.error(
+                "Vendor approval update error:",
+                err
+              );
+
+              return res.status(500).json({
+                success: false,
+                message:
+                  "Vendor approval failed"
+              });
+
+            }
+
+
+            if (
+              !result.affectedRows
+            ) {
+
+              return res.status(404).json({
+                success: false,
+                message:
+                  "Pending vendor not found"
+              });
+
+            }
+
+
+            db.query(
+              `
+              INSERT INTO notifications
+              (
+                user_id,
+                message,
+                type
+              )
+              VALUES (?, ?, ?)
+              `,
+              [
+                id,
+                "Your vendor application has been approved 🎉",
+                "vendor"
+              ],
+              notificationErr => {
+
+                if (notificationErr) {
+
+                  console.error(
+                    "Vendor approval notification error:",
+                    notificationErr
+                  );
+
+                }
+
+              }
+            );
+
+
+            res.json({
+              success: true,
+              message:
+                "Vendor approved"
+            });
+
+          }
+        );
+
+      }
+    );
+
+  }
+);
 
 
 /* =========================================================
@@ -1026,34 +1313,121 @@ router.post("/vendors/approve/:id",verifyAdmin,(req,res)=>{
    POST /api/admin/vendors/reject/:id
 ========================================================= */
 
-router.post("/vendors/reject/:id",verifyAdmin,(req,res)=>{
-  const id=Number(req.params.id);
-  if(!Number.isInteger(id)) return res.status(400).json({success:false,message:"Invalid vendor ID"});
+router.post(
+  "/vendors/reject/:id",
+  verifyAdmin,
+  (req, res) => {
 
-  const reason=String(req.body?.reason||"Vendor application rejected by Admin").trim().slice(0,500);
+    const id =
+      Number(req.params.id);
 
-  db.query(
-    `UPDATE users
-     SET vendor_status='rejected',
-         vendor_reviewed_at=CURRENT_TIMESTAMP,
-         vendor_reviewed_by=?,
-         vendor_rejection_reason=?
-     WHERE id=? AND vendor_status='pending'`,
-    [req.user.id,reason,id],
-    (err,result)=>{
-      if(err) return res.status(500).json({success:false,message:"Vendor rejection failed"});
-      if(!result.affectedRows) return res.status(404).json({success:false,message:"Pending vendor not found"});
 
-      db.query(
-        `INSERT INTO notifications(user_id,message,type) VALUES (?,?,?)`,
-        [id,`Your vendor application was rejected ❌ ${reason}`,"vendor"],
-        ()=>{}
-      );
+    if (
+      !Number.isInteger(id)
+    ) {
 
-      res.json({success:true,message:"Vendor rejected"});
+      return res.status(400).json({
+        success: false,
+        message:
+          "Invalid vendor ID"
+      });
+
     }
-  );
-});
+
+
+    const reason =
+      String(
+        req.body?.reason ||
+        "Vendor application rejected by Admin"
+      )
+        .trim()
+        .slice(0, 500);
+
+
+    db.query(
+      `
+      UPDATE users
+      SET
+        vendor_status='rejected',
+        vendor_reviewed_at=CURRENT_TIMESTAMP,
+        vendor_reviewed_by=?,
+        vendor_rejection_reason=?
+      WHERE id=?
+      AND vendor_status='pending'
+      `,
+      [
+        req.user.id,
+        reason,
+        id
+      ],
+
+      (err, result) => {
+
+        if (err) {
+
+          return res.status(500).json({
+            success: false,
+            message:
+              "Vendor rejection failed"
+          });
+
+        }
+
+
+        if (
+          !result.affectedRows
+        ) {
+
+          return res.status(404).json({
+            success: false,
+            message:
+              "Pending vendor not found"
+          });
+
+        }
+
+
+        db.query(
+          `
+          INSERT INTO notifications
+          (
+            user_id,
+            message,
+            type
+          )
+          VALUES (?, ?, ?)
+          `,
+          [
+            id,
+            `Your vendor application was rejected ❌ ${reason}`,
+            "vendor"
+          ],
+          notificationErr => {
+
+            if (notificationErr) {
+
+              console.error(
+                "Vendor rejection notification error:",
+                notificationErr
+              );
+
+            }
+
+          }
+        );
+
+
+        res.json({
+          success: true,
+          message:
+            "Vendor rejected"
+        });
+
+      }
+    );
+
+  }
+);
 
 
 /* =========================================================
@@ -1199,12 +1573,6 @@ router.post(
           requests[0];
 
 
-        /*
-          Only admin or moderator
-          can be created through
-          this request system.
-        */
-
         const requestedLevel =
           request.admin_level;
 
@@ -1263,12 +1631,6 @@ router.post(
               users[0];
 
 
-            /*
-              Make sure the requester
-              has not already been
-              deleted or disabled.
-            */
-
             if (
               user.status === "rejected"
             ) {
@@ -1281,6 +1643,17 @@ router.post(
 
             }
 
+
+            /*
+             * IMPORTANT:
+             *
+             * We only change administrator fields.
+             *
+             * vendor_status is NOT touched.
+             *
+             * Therefore a vendor can become an admin
+             * without losing vendor access.
+             */
 
             db.query(
               `
@@ -1351,10 +1724,6 @@ router.post(
 
                     }
 
-
-                    /*
-                      Notify requester.
-                    */
 
                     db.query(
                       `
@@ -1518,10 +1887,6 @@ router.post(
             }
 
 
-            /*
-              Notify requester.
-            */
-
             db.query(
               `
               INSERT INTO notifications
@@ -1597,6 +1962,7 @@ router.get(
         pi_uid,
         pi_username,
         admin_level,
+        vendor_status,
         created_at
       FROM users
       WHERE role = 'admin'
@@ -1683,11 +2049,6 @@ router.post(
 
     }
 
-
-    /*
-      Super Admin cannot
-      downgrade themselves.
-    */
 
     if (
       adminId === req.user.id
@@ -1797,6 +2158,18 @@ router.post(
    REMOVE ADMINISTRATOR
 
    POST /api/admin/administrators/:id/remove
+
+   IMPORTANT:
+   If the administrator is also an approved vendor,
+   preserve vendor role/access.
+
+   ADMIN + VENDOR
+   becomes
+   VENDOR
+
+   ADMIN ONLY
+   becomes
+   BUYER
 ========================================================= */
 
 router.post(
@@ -1822,11 +2195,6 @@ router.post(
     }
 
 
-    /*
-      Super Admin cannot
-      remove themselves.
-    */
-
     if (
       adminId === req.user.id
     ) {
@@ -1846,7 +2214,8 @@ router.post(
         id,
         name,
         pi_username,
-        admin_level
+        admin_level,
+        vendor_status
       FROM users
       WHERE id = ?
       AND role = 'admin'
@@ -1883,12 +2252,6 @@ router.post(
           admins[0];
 
 
-        /*
-          Do not allow another
-          super_admin to be removed
-          using this simple endpoint.
-        */
-
         if (
           admin.admin_level ===
           "super_admin"
@@ -1903,12 +2266,27 @@ router.post(
         }
 
 
+        /*
+         * IMPORTANT:
+         *
+         * If the administrator is also an approved
+         * vendor, preserve vendor role.
+         *
+         * Otherwise become buyer.
+         */
+
+        const newRole =
+          admin.vendor_status === "approved"
+            ? "vendor"
+            : "buyer";
+
+
         db.query(
           `
           UPDATE users
 
           SET
-            role = 'buyer',
+            role = ?,
             status = 'approved',
             admin_level = 'none'
 
@@ -1916,7 +2294,10 @@ router.post(
           AND role = 'admin'
           `,
 
-          [adminId],
+          [
+            newRole,
+            adminId
+          ],
 
           (updateErr) => {
 
@@ -1995,11 +2376,6 @@ router.post(
    - Pi username
    - Existing marketplace users
    - New users when Pi UID is supplied
-
-   IMPORTANT:
-   The invitation is tied to the Pi UID.
-   The Pi username is only used to help identify
-   an existing user.
 ========================================================= */
 
 router.post(
@@ -2031,10 +2407,6 @@ router.post(
         ? "moderator"
         : "admin";
 
-
-    /*
-     * At least one identity must be supplied.
-     */
 
     if (
       !cleanPiUid &&
@@ -2075,7 +2447,8 @@ router.post(
               status,
               pi_uid,
               pi_username,
-              admin_level
+              admin_level,
+              vendor_status
             FROM users
             WHERE pi_uid = ?
             LIMIT 1
@@ -2096,7 +2469,6 @@ router.post(
 
       /* =====================================================
          FIND BY PI USERNAME
-         This solves the current frontend/backend mismatch.
       ===================================================== */
 
       if (
@@ -2115,7 +2487,8 @@ router.post(
               status,
               pi_uid,
               pi_username,
-              admin_level
+              admin_level,
+              vendor_status
             FROM users
             WHERE LOWER(pi_username) = LOWER(?)
             LIMIT 1
@@ -2140,11 +2513,6 @@ router.post(
 
       if (targetUser) {
 
-        /*
-         * Use the verified UID already stored
-         * in our database.
-         */
-
         if (
           !targetUser.pi_uid
         ) {
@@ -2160,11 +2528,6 @@ router.post(
 
         }
 
-
-        /*
-         * The UID supplied by the Super Admin,
-         * if any, must match the existing account.
-         */
 
         if (
           cleanPiUid &&
@@ -2184,11 +2547,6 @@ router.post(
         }
 
 
-        /*
-         * Use the database UID as the
-         * authoritative identity.
-         */
-
         targetUser.pi_uid =
           String(targetUser.pi_uid);
 
@@ -2196,18 +2554,10 @@ router.post(
 
 
       /* =====================================================
-         * NEW USER
-         * ===================================================== */
+         NEW USER
+      ===================================================== */
 
       if (!targetUser) {
-
-        /*
-         * A username alone is not enough to safely
-         * create an invitation for someone who has
-         * never logged into the marketplace.
-         *
-         * We need the Pi UID in this case.
-         */
 
         if (!cleanPiUid) {
 
@@ -2359,7 +2709,6 @@ router.post(
 
       /* =====================================================
          CREATE NORMAL NOTIFICATION
-         IF USER ALREADY EXISTS
       ===================================================== */
 
       if (
@@ -2391,11 +2740,6 @@ router.post(
           notificationError
         ) {
 
-          /*
-           * Do not destroy the invitation just because
-           * the optional notification failed.
-           */
-
           console.error(
             "Admin invitation notification error:",
             notificationError
@@ -2405,10 +2749,6 @@ router.post(
 
       }
 
-
-      /* =====================================================
-         SUCCESS
-      ===================================================== */
 
       return res.status(201).json({
 
@@ -2538,6 +2878,7 @@ router.get(
   }
 );
 
+
 /* =========================================================
    SUPER ADMIN
    REVOKE INVITATION
@@ -2641,10 +2982,18 @@ router.post(
             }
 
 
-            /*
-             * Notify the invited user if
-             * the account exists.
-             */
+            if (
+              !result.affectedRows
+            ) {
+
+              return res.status(404).json({
+                success: false,
+                message:
+                  "Pending invitation not found"
+              });
+
+            }
+
 
             db.query(
               `
@@ -2703,11 +3052,15 @@ router.post(
   }
 );
 
+
 /* =========================================================
    VENDOR EARNINGS
    GET /api/admin/earnings/pending
 
    NORMAL ADMIN + SUPER ADMIN CAN VIEW
+
+   IMPORTANT:
+   Admin+Vendor accounts are valid vendors.
 ========================================================= */
 
 router.get(
@@ -2740,53 +3093,52 @@ router.get(
             u.pi_uid,
             u.pi_username,
             u.business_name,
+            u.role AS vendor_role,
+            u.admin_level AS vendor_admin_level,
             u.pi_wallet_address AS wallet_address,
+            u.vendor_status,
 
             o.status AS order_status,
             o.delivery_status,
             o.buyer_confirmed_at,
 
-CASE
-  WHEN
-    o.buyer_confirmed_at IS NOT NULL
-    AND e.status = 'pending'
-    AND u.pi_uid IS NOT NULL
-    AND TRIM(u.pi_uid) <> ''
-    AND u.pi_wallet_address IS NOT NULL
-    AND TRIM(u.pi_wallet_address) <> ''
-    AND u.role = 'vendor'
-    AND u.status = 'approved'
-    AND u.vendor_status = 'approved'
-  THEN 1
-  ELSE 0
-END AS payout_ready,
+            CASE
+              WHEN
+                o.buyer_confirmed_at IS NOT NULL
+                AND e.status = 'pending'
+                AND u.pi_uid IS NOT NULL
+                AND TRIM(u.pi_uid) <> ''
+                AND u.pi_wallet_address IS NOT NULL
+                AND TRIM(u.pi_wallet_address) <> ''
+                AND u.vendor_status = 'approved'
+                AND u.status = 'approved'
+              THEN 1
+              ELSE 0
+            END AS payout_ready,
 
-CASE
-  WHEN o.buyer_confirmed_at IS NULL
-    THEN 'Buyer has not confirmed receipt'
+            CASE
+              WHEN o.buyer_confirmed_at IS NULL
+                THEN 'Buyer has not confirmed receipt'
 
-  WHEN e.status <> 'pending'
-    THEN 'This earning is no longer pending'
+              WHEN e.status <> 'pending'
+                THEN 'This earning is no longer pending'
 
-  WHEN u.role <> 'vendor'
-    THEN 'Account is no longer a vendor'
+              WHEN u.vendor_status <> 'approved'
+                THEN 'Vendor status is not approved'
 
-  WHEN u.status <> 'approved'
-    THEN 'Vendor account is not approved'
+              WHEN u.status <> 'approved'
+                THEN 'Vendor account is not approved'
 
-  WHEN u.vendor_status <> 'approved'
-    THEN 'Vendor status is not approved'
+              WHEN u.pi_uid IS NULL
+                OR TRIM(u.pi_uid) = ''
+                THEN 'Vendor Pi UID is missing'
 
-  WHEN u.pi_uid IS NULL
-    OR TRIM(u.pi_uid) = ''
-    THEN 'Vendor Pi UID is missing'
+              WHEN u.pi_wallet_address IS NULL
+                OR TRIM(u.pi_wallet_address) = ''
+                THEN 'Vendor Pi wallet permission/address is missing'
 
-  WHEN u.pi_wallet_address IS NULL
-    OR TRIM(u.pi_wallet_address) = ''
-    THEN 'Vendor Pi wallet permission/address is missing'
-
-  ELSE 'Ready for payout'
-END AS payout_ready_reason
+              ELSE 'Ready for payout'
+            END AS payout_ready_reason
 
           FROM earnings e
 
@@ -2834,6 +3186,7 @@ END AS payout_ready_reason
   }
 );
 
+
 /* ==================================================
    RELEASE VENDOR EARNING
    POST /api/admin/earnings/:id/release
@@ -2844,6 +3197,18 @@ END AS payout_ready_reason
 
    IMPORTANT:
    A2U payments are currently supported by Pi on Testnet.
+
+   IMPORTANT ADMIN/VENDOR CHANGE:
+   Vendor eligibility is determined by vendor_status,
+   not role.
+
+   Therefore:
+
+   role='vendor' + vendor_status='approved'
+   AND
+   role='admin' + vendor_status='approved'
+
+   are both eligible vendors.
 ===================================================== */
 
 router.post(
@@ -2881,14 +3246,6 @@ router.post(
 
     let lockAcquired = false;
 
-
-    /*
-     * MySQL named lock.
-     *
-     * This prevents two Admin requests
-     * from processing A2U payouts at the
-     * same time.
-     */
 
     const A2U_LOCK_NAME =
       "charcoal_marketplace_a2u_payout";
@@ -3208,12 +3565,19 @@ router.post(
 
       /* =====================================================
          VENDOR STATUS
+         
+         IMPORTANT:
+         Do NOT require vendor_role='vendor'.
+         
+         An Admin+Vendor has:
+         
+         role='admin'
+         vendor_status='approved'
+         
+         and is a valid vendor.
       ===================================================== */
 
       if (
-        earning.vendor_role !==
-          "vendor" ||
-
         earning.vendor_account_status !==
           "approved" ||
 
@@ -3277,10 +3641,9 @@ router.post(
 
 
       /*
-       * We can now release the DB transaction.
+       * Release DB transaction.
        *
-       * The GLOBAL MySQL named lock remains active
-       * during the external Pi operation.
+       * GLOBAL named lock remains active.
        */
 
       await connection.commit();
@@ -3303,12 +3666,6 @@ router.post(
 
         } catch (paymentFetchError) {
 
-          /*
-           * A stale payment identifier can happen when an older
-           * failed payout was created but later disappeared from
-           * the Pi server. A confirmed 404 is safe to recover
-           * from because there is no payment to complete.
-           */
           if (
             Number(paymentFetchError.status) === 404 ||
             paymentFetchError.code === "payment_not_found"
@@ -3521,7 +3878,10 @@ router.post(
         currentPayment.status?.developer_completed === true;
 
 
-      if (alreadyCompleted && existingPaymentTxid) {
+      if (
+        alreadyCompleted &&
+        existingPaymentTxid
+      ) {
 
         txid =
           existingPaymentTxid;
@@ -3779,8 +4139,8 @@ router.post(
 
       /*
        * Never mark the earning paid
-       * merely because the blockchain
-       * submission was attempted.
+       * merely because blockchain submission
+       * was attempted.
        */
 
       try {
@@ -3889,14 +4249,12 @@ router.post(
   }
 );
 
+
 /* =========================================================
    SUPER ADMIN
    GET INCOMPLETE PI A2U PAYMENTS
 
    GET /api/admin/payments/incomplete
-
-   Used to detect A2U payments that were created
-   but were not completely processed.
 ========================================================= */
 
 router.get(
@@ -3941,4 +4299,6 @@ router.get(
 
   }
 );
+
+
 module.exports = router;
