@@ -293,36 +293,105 @@ function verifyToken(allowedRoles = null) {
 
         /* -------------------------------------------------
            NORMALIZE ADMIN LEVEL
+           
+           IMPORTANT:
+           Admin information must NEVER be removed just
+           because the user is also an approved vendor.
         ------------------------------------------------- */
 
-        user.admin_level =
+        if (
           user.role === "admin"
-            ? (
-                user.admin_level ||
-                "admin"
-              )
-            : "none";
+        ) {
+
+          user.admin_level =
+            user.admin_level ||
+            "admin";
+
+        } else {
+
+          user.admin_level =
+            "none";
+
+        }
 
 
         /* -------------------------------------------------
            NORMALIZE VENDOR STATUS
+           
+           IMPORTANT:
+           An ADMIN can also be an APPROVED VENDOR.
+           
+           Therefore vendor_status must NOT be forced
+           to null merely because role === "admin".
         ------------------------------------------------- */
 
-        user.vendor_status =
-          user.role === "vendor"
-            ? (
-                user.vendor_status ||
-                "pending"
-              )
-            : null;
+        if (
+          user.vendor_status === "approved"
+        ) {
 
+          user.vendor_status =
+            "approved";
+
+        } else if (
+          user.vendor_status === "pending"
+        ) {
+
+          user.vendor_status =
+            "pending";
+
+        } else if (
+          user.vendor_status === "rejected"
+        ) {
+
+          user.vendor_status =
+            "rejected";
+
+        } else {
+
+          user.vendor_status =
+            null;
+
+        }
+
+
+        /* -------------------------------------------------
+           HELPER FLAGS
+           
+           These make it easy for frontend/backend code
+           to determine whether an account has each
+           capability without changing the user's role.
+        ------------------------------------------------- */
+
+        user.isAdmin =
+          user.role === "admin";
+
+        user.isSuperAdmin =
+          user.role === "admin" &&
+          user.admin_level === "super_admin";
+
+        user.isVendor =
+          user.vendor_status === "approved";
+
+
+        /* -------------------------------------------------
+           FINAL USER OBJECT
+        ------------------------------------------------- */
 
         req.user =
           user;
 
 
         console.log(
-          `[AUTH] ${requestId} Authentication successful`
+          `[AUTH] ${requestId} Authentication successful`,
+          {
+            id: user.id,
+            isAdmin: user.isAdmin,
+            isSuperAdmin: user.isSuperAdmin,
+            isVendor: user.isVendor,
+            role: user.role,
+            admin_level: user.admin_level,
+            vendor_status: user.vendor_status
+          }
         );
 
 
@@ -416,8 +485,24 @@ function verifyVendor(
   next
 ) {
 
+  /*
+   * IMPORTANT:
+   *
+   * A user may be BOTH:
+   *
+   *   role = admin
+   *   vendor_status = approved
+   *
+   * Therefore vendor access must NOT require:
+   *
+   *   role === "vendor"
+   *
+   * Vendor permission is determined by
+   * vendor_status.
+   */
+
   return verifyToken(
-    ["vendor"]
+    null
   )(
     req,
     res,
@@ -455,13 +540,17 @@ function verifyVendor(
 }
 
 
+/* =========================================================
+   EXPORT
+========================================================= */
+
 module.exports = {
 
   verifyToken,
 
   verifyAdmin,
 
-  verifySuperAdmin,
+  requireSuperAdmin: verifySuperAdmin,
 
   verifyVendor
 
