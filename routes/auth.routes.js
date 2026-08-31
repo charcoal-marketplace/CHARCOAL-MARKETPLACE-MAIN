@@ -231,7 +231,6 @@ async function verifyPiAccount(
         piUser.username,
 
       wallet_address:
-        walletAddress ||
         piUser.wallet_address ||
         null
 
@@ -479,7 +478,7 @@ function reconcilePiUser(
       const walletAddress =
   getVerifiedPiWalletAddress(
     piUser,
-    pi_wallet_address
+    suppliedWalletAddress
   );
 
 
@@ -922,13 +921,6 @@ const walletAddress =
       const email =
         `${uid}@pi.app`
       
-
-      const walletAddress =
-  getVerifiedPiWalletAddress(
-    piUser,
-    pi_wallet_address
-  );
-
 
       /* ===================================================
          FIND EXISTING USER
@@ -1589,22 +1581,6 @@ router.post(
 
 
 
-        /*
-         * IMPORTANT CORRECTION:
-         *
-         * DO NOT reject an approved vendor here merely
-         * because wallet_address is missing.
-         *
-         * Login and payout are separate operations.
-         *
-         * The vendor is allowed to enter the dashboard.
-         *
-         * The payout endpoint should check the wallet when
-         * the vendor payout is actually requested.
-         */
-
-
-
         /* ===============================================
            ACCOUNT STATUS
         ================================================ */
@@ -2173,8 +2149,7 @@ router.post(
 
         return res.status(403).json({
 
-          success:
-            false,
+          
 
           message:
             "This Pi account is not an authorized administrator"
