@@ -395,6 +395,331 @@ router.get(
 
 
 /* =========================================================
+   ALL APPROVED / ACTIVE VENDORS
+   GET /api/admin/vendors
+
+   Used by:
+   Admin Dashboard → Vendors
+========================================================= */
+
+router.get(
+  "/vendors",
+  verifyAdmin,
+  (req, res) => {
+
+    db.query(
+      `
+      SELECT
+        id,
+        name,
+        email,
+        role,
+        status,
+        pi_uid,
+        pi_username,
+        pi_wallet_address,
+        vendor_status,
+        business_name,
+        business_phone,
+        business_location,
+        business_description,
+        vendor_applied_at,
+        vendor_reviewed_at,
+        created_at
+      FROM users
+      WHERE role = 'vendor'
+      ORDER BY created_at DESC
+      `,
+      (err, vendors) => {
+
+        if (err) {
+
+          console.error(
+            "Admin vendors list error:",
+            err
+          );
+
+          return res.status(500).json({
+
+            success: false,
+
+            message:
+              "Failed to load vendors"
+
+          });
+
+        }
+
+
+        return res.json({
+
+          success: true,
+
+          vendors:
+            vendors || []
+
+        });
+
+      }
+    );
+
+  }
+);
+
+
+/* =========================================================
+   REVOKE VENDOR
+   POST /api/admin/vendors/:id/revoke
+
+   Changes the vendor back to buyer and disables
+   the vendor's active products.
+========================================================= */
+
+router.post(
+  "/vendors/:id/revoke",
+  verifyAdmin,
+  (req, res) => {
+
+    const vendorId =
+      Number(req.params.id);
+
+
+    if (
+      !Number.isInteger(vendorId)
+    ) {
+
+      return res.status(400).json({
+
+        success: false,
+
+        message:
+          "Invalid vendor ID"
+
+      });
+
+    }
+
+
+    if (
+      Number(req.user.id) ===
+      vendorId
+    ) {
+
+      return res.status(400).json({
+
+        success: false,
+
+        message:
+          "You cannot revoke your own account."
+
+      });
+
+    }
+
+
+    db.query(
+      `
+      SELECT
+        id,
+        name,
+        role,
+        vendor_status
+      FROM users
+      WHERE id=?
+      LIMIT 1
+      `,
+      [vendorId],
+      (err, rows) => {
+
+        if (err) {
+
+          console.error(
+            "Vendor lookup for revoke:",
+            err
+          );
+
+          return res.status(500).json({
+
+            success: false,
+
+            message:
+              "Database error"
+
+          });
+
+        }
+
+
+        if (!rows.length) {
+
+          return res.status(404).json({
+
+            success: false,
+
+            message:
+              "Vendor not found"
+
+          });
+
+        }
+
+
+        const vendor =
+          rows[0];
+
+
+        if (
+          vendor.role !== "vendor"
+        ) {
+
+          return res.status(400).json({
+
+            success: false,
+
+            message:
+              "This account is not currently a vendor"
+
+          });
+
+        }
+
+
+        /* ===============================================
+           REVOKE VENDOR ACCESS
+        =============================================== */
+
+        db.query(
+          `
+          UPDATE users
+          SET
+            role='buyer',
+            vendor_status='rejected',
+            vendor_reviewed_at=CURRENT_TIMESTAMP,
+            vendor_reviewed_by=?,
+            vendor_rejection_reason='Vendor access revoked by Admin'
+          WHERE id=?
+          `,
+          [
+            req.user.id,
+            vendorId
+          ],
+          (updateErr, result) => {
+
+            if (updateErr) {
+
+              console.error(
+                "Vendor revoke update:",
+                updateErr
+              );
+
+              return res.status(500).json({
+
+                success: false,
+
+                message:
+                  "Failed to revoke vendor"
+
+              });
+
+            }
+
+
+            if (
+              !result.affectedRows
+            ) {
+
+              return res.status(404).json({
+
+                success: false,
+
+                message:
+                  "Vendor could not be revoked"
+
+              });
+
+            }
+
+
+            /* =========================================
+               DISABLE VENDOR PRODUCTS
+            ========================================= */
+
+            db.query(
+              `
+              UPDATE products
+              SET
+                is_active=FALSE
+              WHERE vendor_id=?
+              `,
+              [vendorId],
+              productErr => {
+
+                if (productErr) {
+
+                  console.error(
+                    "Vendor products disable error:",
+                    productErr
+                  );
+
+                }
+
+
+                /* =====================================
+                   NOTIFY VENDOR
+                ===================================== */
+
+                db.query(
+                  `
+                  INSERT INTO notifications
+                  (
+                    user_id,
+                    message,
+                    type
+                  )
+                  VALUES (?, ?, ?)
+                  `,
+                  [
+                    vendorId,
+                    "Your vendor access has been revoked by an Administrator.",
+                    "vendor"
+                  ],
+                  notificationErr => {
+
+                    if (notificationErr) {
+
+                      console.error(
+                        "Vendor revoke notification error:",
+                        notificationErr
+                      );
+
+                    }
+
+                  }
+                );
+
+
+                return res.json({
+
+                  success: true,
+
+                  message:
+                    `${vendor.name || "Vendor"} has been revoked successfully`
+
+                });
+
+              }
+            );
+
+          }
+        );
+
+      }
+    );
+
+  }
+);
+
+/* =========================================================
    APPROVE PRODUCT
    POST /api/admin/products/approve/:id
 ========================================================= */
@@ -2421,16 +2746,47 @@ router.get(
             o.delivery_status,
             o.buyer_confirmed_at,
 
-            CASE
-              WHEN o.buyer_confirmed_at IS NOT NULL
-                AND u.pi_uid IS NOT NULL
-                AND u.pi_wallet_address IS NOT NULL
-                AND u.role = 'vendor'
-                AND u.status = 'approved'
-                AND u.vendor_status = 'approved'
-              THEN 1
-              ELSE 0
-            END AS payout_ready
+CASE
+  WHEN
+    o.buyer_confirmed_at IS NOT NULL
+    AND e.status = 'pending'
+    AND u.pi_uid IS NOT NULL
+    AND TRIM(u.pi_uid) <> ''
+    AND u.pi_wallet_address IS NOT NULL
+    AND TRIM(u.pi_wallet_address) <> ''
+    AND u.role = 'vendor'
+    AND u.status = 'approved'
+    AND u.vendor_status = 'approved'
+  THEN 1
+  ELSE 0
+END AS payout_ready,
+
+CASE
+  WHEN o.buyer_confirmed_at IS NULL
+    THEN 'Buyer has not confirmed receipt'
+
+  WHEN e.status <> 'pending'
+    THEN 'This earning is no longer pending'
+
+  WHEN u.role <> 'vendor'
+    THEN 'Account is no longer a vendor'
+
+  WHEN u.status <> 'approved'
+    THEN 'Vendor account is not approved'
+
+  WHEN u.vendor_status <> 'approved'
+    THEN 'Vendor status is not approved'
+
+  WHEN u.pi_uid IS NULL
+    OR TRIM(u.pi_uid) = ''
+    THEN 'Vendor Pi UID is missing'
+
+  WHEN u.pi_wallet_address IS NULL
+    OR TRIM(u.pi_wallet_address) = ''
+    THEN 'Vendor Pi wallet permission/address is missing'
+
+  ELSE 'Ready for payout'
+END AS payout_ready_reason
 
           FROM earnings e
 
