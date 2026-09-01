@@ -172,7 +172,6 @@ function getVerifiedPiWalletAddress(
   suppliedWalletAddress = null
 ) {
 
-
   const piWallet =
     normalizeWalletAddress(
       piUser?.wallet_address
@@ -181,7 +180,6 @@ function getVerifiedPiWalletAddress(
   if (piWallet) {
     return piWallet;
   }
-
 
   const supplied =
     normalizeWalletAddress(
@@ -229,7 +227,6 @@ function findExistingPiUser(
 
           }
 
-
           /*
            * Fallback to Pi username.
            */
@@ -242,7 +239,6 @@ function findExistingPiUser(
             });
 
           }
-
 
           db.query(
             `SELECT *
@@ -302,7 +298,6 @@ function reconcilePiUser(
         user.pi_username ||
         null;
 
-
       const walletAddress =
         getVerifiedPiWalletAddress(
           piUser,
@@ -310,7 +305,6 @@ function reconcilePiUser(
             user.pi_wallet_address ||
             null
         );
-
 
       const fields = [];
       const values = [];
@@ -796,40 +790,40 @@ router.post(
 
       /* ===============================================
          RECONCILE PI ACCOUNT
-      ================================================*/
+      ================================================ */
 
-let user = match.user;
+      let user = match.user;
 
-try {
+      try {
 
-  user =
-    await reconcilePiUser(
-      user,
-      piUser,
-      walletAddress
-    );
+        user =
+          await reconcilePiUser(
+            user,
+            piUser,
+            walletAddress
+          );
 
-} catch (reconcileError) {
+      } catch (reconcileError) {
 
-  console.error(
-    "[PI AUTH] Vendor reconciliation error:",
-    reconcileError
-  );
+        console.error(
+          "[PI AUTH] Vendor reconciliation error:",
+          reconcileError
+        );
 
-  console.error(
-    "[PI AUTH] Vendor reconciliation DB error:",
-    reconcileError?.sqlMessage ||
-    reconcileError?.message ||
-    reconcileError
-  );
+        console.error(
+          "[PI AUTH] Vendor reconciliation DB error:",
+          reconcileError?.sqlMessage ||
+          reconcileError?.message ||
+          reconcileError
+        );
 
-  return res.status(500).json({
-    success: false,
-    message:
-      "Failed to update your Pi account"
-  });
+        return res.status(500).json({
+          success: false,
+          message:
+            "Failed to update your Pi account"
+        });
 
-}
+      }
 
 
       /* ===============================================
@@ -992,6 +986,7 @@ router.post(
       /*
        * Wallet from Pi if available.
        */
+
       const walletAddress =
         getVerifiedPiWalletAddress(
           piUser,
@@ -1259,6 +1254,7 @@ router.post(
 
 /* =========================================================
    PI ADMINISTRATOR LOGIN
+   PI USERNAME + WALLET PERMISSION REQUIRED
 ========================================================= */
 
 router.post(
@@ -1279,6 +1275,55 @@ router.post(
       const username =
         piUser.username ||
         "Pi User";
+
+
+      /* ===============================================
+         ADMIN WALLET PERMISSION IS REQUIRED
+      ================================================ */
+
+      const adminWalletAddress =
+        normalizeWalletAddress(
+          piUser.wallet_address
+        );
+
+
+      /*
+       * IMPORTANT:
+       *
+       * Admin login does NOT fall back to the wallet
+       * already stored in the database.
+       *
+       * The current Pi authentication must provide
+       * a valid wallet address.
+       */
+
+      if (!adminWalletAddress) {
+
+        console.warn(
+          "[PI ADMIN] Wallet address permission was not granted."
+        );
+
+        return res.status(403).json({
+          success: false,
+          code:
+            "WALLET_PERMISSION_REQUIRED",
+          message:
+            "Wallet address permission is required for Administrator Login.",
+          wallet_verified:
+            false
+        });
+
+      }
+
+
+      console.log(
+        "[PI ADMIN] Wallet permission verified:",
+        {
+          username,
+          wallet_address:
+            adminWalletAddress
+        }
+      );
 
 
       /* ===============================================
@@ -1320,13 +1365,21 @@ router.post(
         let user =
           match.user;
 
+
         try {
+
+          /*
+           * IMPORTANT:
+           *
+           * Use the wallet returned by the current
+           * verified Pi authentication.
+           */
 
           user =
             await reconcilePiUser(
               user,
               piUser,
-              user.pi_wallet_address || null
+              adminWalletAddress
             );
 
         } catch (reconcileError) {
@@ -1340,6 +1393,45 @@ router.post(
             success: false,
             message:
               "Failed to update administrator account"
+          });
+
+        }
+
+
+        /* ============================================
+           VERIFY WALLET WAS SAVED
+        ============================================ */
+
+        if (
+          !user.pi_wallet_address ||
+          String(
+            user.pi_wallet_address
+          ).trim() !==
+          String(
+            adminWalletAddress
+          ).trim()
+        ) {
+
+          console.error(
+            "[PI ADMIN] Wallet verification mismatch:",
+            {
+              pi_wallet:
+                adminWalletAddress,
+
+              database_wallet:
+                user.pi_wallet_address ||
+                null
+            }
+          );
+
+          return res.status(403).json({
+            success: false,
+            code:
+              "WALLET_VERIFICATION_FAILED",
+            message:
+              "Administrator wallet verification failed.",
+            wallet_verified:
+              false
           });
 
         }
@@ -1415,6 +1507,9 @@ router.post(
           token:
             createToken(user),
 
+          wallet_verified:
+            true,
+
           user:
             publicUser(user)
         });
@@ -1464,11 +1559,16 @@ router.post(
 
       try {
 
+        /*
+         * IMPORTANT:
+         *
+         * adminWalletAddress has already been
+         * verified above from the current Pi
+         * authentication.
+         */
+
         const walletAddress =
-          getVerifiedPiWalletAddress(
-            piUser,
-            null
-          );
+          adminWalletAddress;
 
 
         const user =
@@ -1559,10 +1659,16 @@ router.post(
 
         return res.json({
           success: true,
+
           message:
             "Super Admin created successfully",
+
           token:
             createToken(user),
+
+          wallet_verified:
+            true,
+
           user:
             publicUser(user)
         });
@@ -1595,9 +1701,36 @@ router.post(
                 await reconcilePiUser(
                   recovered.user,
                   piUser,
-                  recovered.user.pi_wallet_address ||
-                    null
+                  adminWalletAddress
                 );
+
+
+              /*
+               * Verify the wallet again after
+               * duplicate-account recovery.
+               */
+
+              if (
+                !recoveredUser.pi_wallet_address ||
+                String(
+                  recoveredUser.pi_wallet_address
+                ).trim() !==
+                String(
+                  adminWalletAddress
+                ).trim()
+              ) {
+
+                return res.status(403).json({
+                  success: false,
+                  code:
+                    "WALLET_VERIFICATION_FAILED",
+                  message:
+                    "Administrator wallet verification failed.",
+                  wallet_verified:
+                    false
+                });
+
+              }
 
 
               if (
@@ -1627,6 +1760,9 @@ router.post(
                     createToken(
                       recoveredUser
                     ),
+
+                  wallet_verified:
+                    true,
 
                   user:
                     publicUser(
