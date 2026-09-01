@@ -1452,6 +1452,187 @@ ADD COLUMN buyer_confirmed_at DATETIME NULL AFTER completed_at;
 
 CREATE INDEX idx_orders_buyer_confirmed
 ON orders (buyer_confirmed_at);
+
+
+ALTER TABLE users
+ADD COLUMN admin_share_percent DECIMAL(5,2) NOT NULL DEFAULT 0.00
+AFTER admin_level;
+
+CREATE INDEX idx_users_admin_share
+ON users (admin_share_percent);
+
+
+CREATE TABLE withdrawals (
+
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+
+    initiated_by BIGINT UNSIGNED NOT NULL,
+
+    total_amount_pi DECIMAL(20,8) NOT NULL DEFAULT 0.00000000,
+
+    status ENUM(
+        'pending',
+        'processing',
+        'completed',
+        'partial',
+        'failed',
+        'cancelled'
+    ) NOT NULL DEFAULT 'pending',
+
+    description VARCHAR(500) NULL,
+
+    error_message TEXT NULL,
+
+    created_at TIMESTAMP NOT NULL
+        DEFAULT CURRENT_TIMESTAMP,
+
+    processing_started_at DATETIME NULL,
+
+    completed_at DATETIME NULL,
+
+    updated_at TIMESTAMP NOT NULL
+        DEFAULT CURRENT_TIMESTAMP
+        ON UPDATE CURRENT_TIMESTAMP,
+
+    PRIMARY KEY (id),
+
+    INDEX idx_withdrawals_initiated_by (
+        initiated_by
+    ),
+
+    INDEX idx_withdrawals_status (
+        status
+    ),
+
+    INDEX idx_withdrawals_created (
+        created_at
+    ),
+
+    CONSTRAINT fk_withdrawals_initiated_by
+
+        FOREIGN KEY (initiated_by)
+
+        REFERENCES users(id)
+
+        ON DELETE RESTRICT
+
+        ON UPDATE CASCADE
+
+) ENGINE=InnoDB
+DEFAULT CHARSET=utf8mb4
+COLLATE=utf8mb4_unicode_ci;
+
+
+CREATE TABLE withdrawal_items (
+
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+
+    withdrawal_id BIGINT UNSIGNED NOT NULL,
+
+    user_id BIGINT UNSIGNED NOT NULL,
+
+    admin_share_percent DECIMAL(5,2) NOT NULL DEFAULT 0.00,
+
+    amount_pi DECIMAL(20,8) NOT NULL DEFAULT 0.00000000,
+
+    wallet_address VARCHAR(255) NULL,
+
+    payout_payment_id VARCHAR(255) NULL,
+
+    payout_txid VARCHAR(255) NULL,
+
+    status ENUM(
+        'pending',
+        'processing',
+        'completed',
+        'failed',
+        'cancelled'
+    ) NOT NULL DEFAULT 'pending',
+
+    error_message TEXT NULL,
+
+    created_at TIMESTAMP NOT NULL
+        DEFAULT CURRENT_TIMESTAMP,
+
+    processing_started_at DATETIME NULL,
+
+    completed_at DATETIME NULL,
+
+    updated_at TIMESTAMP NOT NULL
+        DEFAULT CURRENT_TIMESTAMP
+        ON UPDATE CURRENT_TIMESTAMP,
+
+    PRIMARY KEY (id),
+
+    INDEX idx_withdrawal_items_withdrawal (
+        withdrawal_id
+    ),
+
+    INDEX idx_withdrawal_items_user (
+        user_id
+    ),
+
+    INDEX idx_withdrawal_items_status (
+        status
+    ),
+
+    INDEX idx_withdrawal_items_payment (
+        payout_payment_id
+    ),
+
+    INDEX idx_withdrawal_items_txid (
+        payout_txid
+    ),
+
+    CONSTRAINT fk_withdrawal_items_withdrawal
+
+        FOREIGN KEY (withdrawal_id)
+
+        REFERENCES withdrawals(id)
+
+        ON DELETE CASCADE
+
+        ON UPDATE CASCADE,
+
+    CONSTRAINT fk_withdrawal_items_user
+
+        FOREIGN KEY (user_id)
+
+        REFERENCES users(id)
+
+        ON DELETE RESTRICT
+
+        ON UPDATE CASCADE
+
+) ENGINE=InnoDB
+DEFAULT CHARSET=utf8mb4
+COLLATE=utf8mb4_unicode_ci;
+
+
+ALTER TABLE earnings
+ADD COLUMN withdrawal_id BIGINT UNSIGNED NULL
+AFTER payment_id;
+
+CREATE INDEX idx_earnings_withdrawal
+ON earnings (withdrawal_id);
+
+ALTER TABLE earnings
+ADD CONSTRAINT fk_earnings_withdrawal
+
+FOREIGN KEY (withdrawal_id)
+
+REFERENCES withdrawals(id)
+
+ON DELETE SET NULL
+
+ON UPDATE CASCADE;
+
+
+CREATE UNIQUE INDEX uq_withdrawal_items_payout_payment
+ON withdrawal_items (payout_payment_id);
+
+CREATE UNIQUE INDEX uq_withdrawal_items_payout_txid
+ON withdrawal_items (payout_txid);
 /*=========================================================
    14. VERIFY DATABASE
 ========================================================= */

@@ -688,6 +688,16 @@ loadRoute(
   "./routes/notifications.routes"
 );
 
+/*===============================================
+ WITHDRAWALS
+ ===============================================*/
+
+loadRoute(
+  "withdrawals",
+  "/api/withdrawals",
+  "./routes/withdrawal.routes"
+);
+
 
 startupLine();
 
