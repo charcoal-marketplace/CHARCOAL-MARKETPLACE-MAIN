@@ -796,31 +796,40 @@ router.post(
 
       /* ===============================================
          RECONCILE PI ACCOUNT
-      ================================================ */
+      ================================================*/
 
-      try {
+let user = match.user;
 
-        user =
-          await reconcilePiUser(
-            user,
-            piUser,
-            walletAddress
-          );
+try {
 
-      } catch (reconcileError) {
+  user =
+    await reconcilePiUser(
+      user,
+      piUser,
+      walletAddress
+    );
 
-        console.error(
-          "[PI AUTH] Vendor reconciliation error:",
-          reconcileError
-        );
+} catch (reconcileError) {
 
-        return res.status(500).json({
-          success: false,
-          message:
-            "Failed to update your Pi account"
-        });
+  console.error(
+    "[PI AUTH] Vendor reconciliation error:",
+    reconcileError
+  );
 
-      }
+  console.error(
+    "[PI AUTH] Vendor reconciliation DB error:",
+    reconcileError?.sqlMessage ||
+    reconcileError?.message ||
+    reconcileError
+  );
+
+  return res.status(500).json({
+    success: false,
+    message:
+      "Failed to update your Pi account"
+  });
+
+}
 
 
       /* ===============================================
