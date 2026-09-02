@@ -689,14 +689,18 @@ loadRoute(
 );
 
 /*===============================================
- WITHDRAWALS
+ A2U PAYMENTS
  ===============================================*/
 
 loadRoute(
-  "withdrawals",
-  "/api/withdrawals",
-  "./routes/withdrawal.routes"
+  "a2u",
+  "/api/a2u",
+  "./routes/a2u.routes"
 );
+
+/*===============================================
+ WITHDRAWALS
+ ===============================================*/
 
 
 startupLine();
