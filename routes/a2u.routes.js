@@ -284,6 +284,7 @@ router.get(
 
 router.post(
   "/earnings/:id/release",
+  verifyAdmin,
   requireA2UAdmin,
   async (req, res) => {
 
