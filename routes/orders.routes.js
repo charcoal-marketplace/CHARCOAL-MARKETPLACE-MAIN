@@ -1,7 +1,10 @@
 const router = require("express").Router();
 const crypto = require("crypto");
 const db = require("../config/db");
-const { verifyToken } = require("../middleware/auth.middleware");
+const {
+  verifyToken,
+  verifyVendor
+} = require("../middleware/auth.middleware");
 
 function money(value) {
   return Number(Number(value || 0).toFixed(8));
@@ -1509,10 +1512,9 @@ router.post(
    VENDOR ORDERS
    GET /api/orders/vendor
 ========================================================= */
-
 router.get(
   "/vendor",
-  verifyToken(["vendor"]),
+  verifyVendor,
   (req, res) => {
 
     db.query(
