@@ -3,7 +3,11 @@ const db = require("../config/db");
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
-const { verifyToken, verifyAdmin } = require("../middleware/auth.middleware");
+const {
+  verifyToken,
+  verifyAdmin,
+  verifyVendor
+} = require("../middleware/auth.middleware");
 
 const uploadDir = path.join(__dirname, "..", "uploads");
 if (!fs.existsSync(uploadDir)) {
@@ -178,7 +182,7 @@ router.get("/", (req, res) => {
 });
 
 /* Vendor's own products. */
-router.get("/my", verifyToken(["vendor"]), (req, res) => {
+router.get("/my", verifyVendor, (req, res) => {
   db.query(
     `SELECT *
      FROM products
