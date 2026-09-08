@@ -44,7 +44,10 @@ const requiredTables = [
   "earnings",
   "notifications",
   "admin_requests",
-  "admin_invitations"
+  "admin_invitations",
+  "support_conversations",
+  "support_messages",
+  "refund_logs"
 ];
 
 let databaseStatus = "checking";
@@ -634,6 +637,32 @@ loadRoute(
   "orders",
   "/api/orders",
   "./routes/orders.routes"
+);
+
+
+/*
+=========================================================
+REFUNDS
+=========================================================
+*/
+
+loadRoute(
+  "refunds",
+  "/api/refunds",
+  "./routes/refund.routes"
+);
+
+
+/*
+=========================================================
+SUPPORT CHAT
+=========================================================
+*/
+
+loadRoute(
+  "support",
+  "/api/support",
+  "./routes/support.routes"
 );
 
 
