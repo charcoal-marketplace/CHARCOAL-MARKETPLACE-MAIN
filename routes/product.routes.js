@@ -208,6 +208,615 @@ router.get("/my", verifyVendor, (req, res) => {
   );
 });
 
+
+/* =========================================================
+   VENDOR PRODUCT MANAGEMENT
+   =========================================================
+
+   Vendors can manage ONLY their own products.
+
+   POST /api/products/:id/delist
+   POST /api/products/:id/relist
+   DELETE /api/products/:id
+
+   IMPORTANT:
+   Vendor delisting does not change admin approval.
+
+   approved + is_active=false
+   = approved but currently delisted by vendor.
+
+========================================================= */
+
+
+/* =========================================================
+   VENDOR DELIST OWN PRODUCT
+   POST /api/products/:id/delist
+========================================================= */
+
+router.post(
+  "/:id/delist",
+  verifyVendor,
+  (req, res) => {
+
+    const productId =
+      Number(req.params.id);
+
+
+    if (
+      !Number.isInteger(productId)
+    ) {
+
+      return res.status(400).json({
+
+        success: false,
+
+        message:
+          "Invalid product ID"
+
+      });
+
+    }
+
+
+    db.query(
+      `
+      SELECT
+        id,
+        name,
+        status,
+        is_active
+
+      FROM products
+
+      WHERE id = ?
+
+      AND vendor_id = ?
+
+      LIMIT 1
+      `,
+
+      [
+        productId,
+        req.user.id
+      ],
+
+      (err, products) => {
+
+        if (err) {
+
+          console.error(
+            "Vendor delist lookup error:",
+            err
+          );
+
+          return res.status(500).json({
+
+            success: false,
+
+            message:
+              "Database error"
+
+          });
+
+        }
+
+
+        if (!products.length) {
+
+          return res.status(404).json({
+
+            success: false,
+
+            message:
+              "Product not found or does not belong to you"
+
+          });
+
+        }
+
+
+        const product =
+          products[0];
+
+
+        if (
+          !product.is_active
+        ) {
+
+          return res.status(400).json({
+
+            success: false,
+
+            message:
+              "Product is already delisted"
+
+          });
+
+        }
+
+
+        db.query(
+          `
+          UPDATE products
+
+          SET
+            is_active = FALSE
+
+          WHERE id = ?
+
+          AND vendor_id = ?
+          `,
+
+          [
+            productId,
+            req.user.id
+          ],
+
+          (updateErr, result) => {
+
+            if (updateErr) {
+
+              console.error(
+                "Vendor product delist error:",
+                updateErr
+              );
+
+              return res.status(500).json({
+
+                success: false,
+
+                message:
+                  "Failed to delist product"
+
+              });
+
+            }
+
+
+            if (
+              !result.affectedRows
+            ) {
+
+              return res.status(404).json({
+
+                success: false,
+
+                message:
+                  "Product could not be delisted"
+
+              });
+
+            }
+
+
+            return res.json({
+
+              success: true,
+
+              message:
+                "Product delisted successfully"
+
+            });
+
+          }
+        );
+
+      }
+    );
+
+  }
+);
+
+
+/* =========================================================
+   VENDOR RELIST OWN PRODUCT
+   POST /api/products/:id/relist
+
+   Vendor can relist an approved product.
+
+   Pending/rejected products still require Admin
+   approval and cannot be published by the vendor.
+========================================================= */
+
+router.post(
+  "/:id/relist",
+  verifyVendor,
+  (req, res) => {
+
+    const productId =
+      Number(req.params.id);
+
+
+    if (
+      !Number.isInteger(productId)
+    ) {
+
+      return res.status(400).json({
+
+        success: false,
+
+        message:
+          "Invalid product ID"
+
+      });
+
+    }
+
+
+    db.query(
+      `
+      SELECT
+        id,
+        name,
+        status,
+        is_active
+
+      FROM products
+
+      WHERE id = ?
+
+      AND vendor_id = ?
+
+      LIMIT 1
+      `,
+
+      [
+        productId,
+        req.user.id
+      ],
+
+      (err, products) => {
+
+        if (err) {
+
+          console.error(
+            "Vendor relist lookup error:",
+            err
+          );
+
+          return res.status(500).json({
+
+            success: false,
+
+            message:
+              "Database error"
+
+          });
+
+        }
+
+
+        if (!products.length) {
+
+          return res.status(404).json({
+
+            success: false,
+
+            message:
+              "Product not found or does not belong to you"
+
+          });
+
+        }
+
+
+        const product =
+          products[0];
+
+
+        if (
+          product.status !==
+          "approved"
+        ) {
+
+          return res.status(400).json({
+
+            success: false,
+
+            message:
+              "Only approved products can be relisted"
+
+          });
+
+        }
+
+
+        if (
+          product.is_active
+        ) {
+
+          return res.status(400).json({
+
+            success: false,
+
+            message:
+              "Product is already listed"
+
+          });
+
+        }
+
+
+        db.query(
+          `
+          UPDATE products
+
+          SET
+            is_active = TRUE
+
+          WHERE id = ?
+
+          AND vendor_id = ?
+          `,
+
+          [
+            productId,
+            req.user.id
+          ],
+
+          (updateErr, result) => {
+
+            if (updateErr) {
+
+              console.error(
+                "Vendor product relist error:",
+                updateErr
+              );
+
+              return res.status(500).json({
+
+                success: false,
+
+                message:
+                  "Failed to relist product"
+
+              });
+
+            }
+
+
+            if (
+              !result.affectedRows
+            ) {
+
+              return res.status(404).json({
+
+                success: false,
+
+                message:
+                  "Product could not be relisted"
+
+              });
+
+            }
+
+
+            return res.json({
+
+              success: true,
+
+              message:
+                "Product relisted successfully"
+
+            });
+
+          }
+        );
+
+      }
+    );
+
+  }
+);
+
+
+/* =========================================================
+   VENDOR DELETE OWN PRODUCT
+   DELETE /api/products/:id
+
+   Vendors may permanently delete only their own products.
+========================================================= */
+
+router.delete(
+  "/:id",
+  verifyVendor,
+  (req, res) => {
+
+    const productId =
+      Number(req.params.id);
+
+
+    if (
+      !Number.isInteger(productId)
+    ) {
+
+      return res.status(400).json({
+
+        success: false,
+
+        message:
+          "Invalid product ID"
+
+      });
+
+    }
+
+
+    db.query(
+      `
+      SELECT
+        id,
+        name,
+        vendor_id,
+        image
+
+      FROM products
+
+      WHERE id = ?
+
+      AND vendor_id = ?
+
+      LIMIT 1
+      `,
+
+      [
+        productId,
+        req.user.id
+      ],
+
+      (err, products) => {
+
+        if (err) {
+
+          console.error(
+            "Vendor delete lookup error:",
+            err
+          );
+
+          return res.status(500).json({
+
+            success: false,
+
+            message:
+              "Database error"
+
+          });
+
+        }
+
+
+        if (!products.length) {
+
+          return res.status(404).json({
+
+            success: false,
+
+            message:
+              "Product not found or does not belong to you"
+
+          });
+
+        }
+
+
+        const product =
+          products[0];
+
+
+        db.query(
+          `
+          DELETE FROM products
+
+          WHERE id = ?
+
+          AND vendor_id = ?
+          `,
+
+          [
+            productId,
+            req.user.id
+          ],
+
+          (deleteErr, result) => {
+
+            if (deleteErr) {
+
+              console.error(
+                "Vendor product delete error:",
+                deleteErr
+              );
+
+              return res.status(500).json({
+
+                success: false,
+
+                message:
+                  "Failed to delete product"
+
+              });
+
+            }
+
+
+            if (
+              !result.affectedRows
+            ) {
+
+              return res.status(404).json({
+
+                success: false,
+
+                message:
+                  "Product could not be deleted"
+
+              });
+
+            }
+
+
+            /*
+             * Remove uploaded image.
+             */
+
+            if (
+              product.image &&
+              !/^https?:\/\//i.test(
+                product.image
+              )
+            ) {
+
+              const imagePath =
+                path.join(
+                  __dirname,
+                  "..",
+                  product.image.replace(
+                    /^\//,
+                    ""
+                  )
+                );
+
+              fs.unlink(
+                imagePath,
+                unlinkErr => {
+
+                  if (
+                    unlinkErr &&
+                    unlinkErr.code !==
+                    "ENOENT"
+                  ) {
+
+                    console.error(
+                      "Vendor image delete error:",
+                      unlinkErr
+                    );
+
+                  }
+
+                }
+              );
+
+            }
+
+
+            return res.json({
+
+              success: true,
+
+              message:
+                "Product deleted successfully"
+
+            });
+
+          }
+        );
+
+      }
+    );
+
+  }
+);
+
+
 /* Admin approval. */
 router.post("/admin/approve/:id", verifyAdmin, (req, res) => {
   const id = Number(req.params.id);

@@ -2999,4 +2999,751 @@ router.post(
 );
 
 
+/* =========================================================
+   PRODUCT MANAGEMENT
+   =========================================================
+
+   ADMIN PRODUCT MANAGEMENT
+
+   GET  /api/admin/products
+   POST /api/admin/products/:id/delist
+   POST /api/admin/products/:id/relist
+   DELETE /api/admin/products/:id
+
+   Any approved administrator can manage marketplace
+   products.
+
+   IMPORTANT:
+   Delisting does NOT delete the product.
+   It only sets is_active = FALSE.
+
+========================================================= */
+
+
+/* =========================================================
+   GET ALL MARKETPLACE PRODUCTS
+   GET /api/admin/products
+========================================================= */
+
+router.get(
+  "/products",
+  verifyAdmin,
+  (req, res) => {
+
+    db.query(
+      `
+      SELECT
+        p.id,
+        p.vendor_id,
+        p.name,
+        p.description,
+        p.category,
+        p.product_type,
+        p.price_pi,
+        p.price_ngn,
+        p.stock,
+        p.unit,
+        p.image,
+        p.location,
+        p.status,
+        p.rejection_reason,
+        p.approved_at,
+        p.approved_by,
+        p.is_active,
+        p.total_sold,
+        p.created_at,
+        p.updated_at,
+
+        u.name AS vendor_name,
+        u.email AS vendor_email,
+        u.pi_username AS vendor_pi_username
+
+      FROM products p
+
+      LEFT JOIN users u
+        ON p.vendor_id = u.id
+
+      ORDER BY p.created_at DESC
+      `,
+
+      (err, products) => {
+
+        if (err) {
+
+          console.error(
+            "Admin products management error:",
+            err
+          );
+
+          return res.status(500).json({
+
+            success: false,
+
+            message:
+              "Failed to load marketplace products"
+
+          });
+
+        }
+
+
+        return res.json({
+
+          success: true,
+
+          products:
+            products || []
+
+        });
+
+      }
+    );
+
+  }
+);
+
+
+/* =========================================================
+   DELIST PRODUCT
+   POST /api/admin/products/:id/delist
+
+   Delisting only changes visibility.
+
+   The product remains in the database.
+========================================================= */
+
+router.post(
+  "/products/:id/delist",
+  verifyAdmin,
+  (req, res) => {
+
+    const productId =
+      Number(req.params.id);
+
+
+    if (
+      !Number.isInteger(productId)
+    ) {
+
+      return res.status(400).json({
+
+        success: false,
+
+        message:
+          "Invalid product ID"
+
+      });
+
+    }
+
+
+    db.query(
+      `
+      SELECT
+        id,
+        name,
+        vendor_id,
+        status,
+        is_active
+
+      FROM products
+
+      WHERE id = ?
+
+      LIMIT 1
+      `,
+
+      [productId],
+
+      (err, products) => {
+
+        if (err) {
+
+          console.error(
+            "Admin delist lookup error:",
+            err
+          );
+
+          return res.status(500).json({
+
+            success: false,
+
+            message:
+              "Database error"
+
+          });
+
+        }
+
+
+        if (!products.length) {
+
+          return res.status(404).json({
+
+            success: false,
+
+            message:
+              "Product not found"
+
+          });
+
+        }
+
+
+        const product =
+          products[0];
+
+
+        if (
+          !product.is_active
+        ) {
+
+          return res.status(400).json({
+
+            success: false,
+
+            message:
+              "Product is already delisted"
+
+          });
+
+        }
+
+
+        db.query(
+          `
+          UPDATE products
+
+          SET
+            is_active = FALSE
+
+          WHERE id = ?
+          `,
+
+          [productId],
+
+          updateErr => {
+
+            if (updateErr) {
+
+              console.error(
+                "Admin product delist error:",
+                updateErr
+              );
+
+              return res.status(500).json({
+
+                success: false,
+
+                message:
+                  "Failed to delist product"
+
+              });
+
+            }
+
+
+            /* =========================================
+               NOTIFY PRODUCT OWNER
+            ========================================= */
+
+            db.query(
+              `
+              INSERT INTO notifications
+              (
+                user_id,
+                message,
+                type
+              )
+              VALUES (?, ?, ?)
+              `,
+
+              [
+                product.vendor_id,
+
+                `Your product "${product.name}" has been delisted by an Administrator.`,
+
+                "product"
+              ],
+
+              notificationErr => {
+
+                if (notificationErr) {
+
+                  console.error(
+                    "Admin delist notification error:",
+                    notificationErr
+                  );
+
+                }
+
+              }
+            );
+
+
+            return res.json({
+
+              success: true,
+
+              message:
+                "Product delisted successfully"
+
+            });
+
+          }
+        );
+
+      }
+    );
+
+  }
+);
+
+
+/* =========================================================
+   RELIST PRODUCT
+   POST /api/admin/products/:id/relist
+
+   IMPORTANT:
+   Relisting does NOT change approval status.
+
+   A rejected product cannot simply be relisted.
+========================================================= */
+
+router.post(
+  "/products/:id/relist",
+  verifyAdmin,
+  (req, res) => {
+
+    const productId =
+      Number(req.params.id);
+
+
+    if (
+      !Number.isInteger(productId)
+    ) {
+
+      return res.status(400).json({
+
+        success: false,
+
+        message:
+          "Invalid product ID"
+
+      });
+
+    }
+
+
+    db.query(
+      `
+      SELECT
+        id,
+        name,
+        vendor_id,
+        status,
+        is_active
+
+      FROM products
+
+      WHERE id = ?
+
+      LIMIT 1
+      `,
+
+      [productId],
+
+      (err, products) => {
+
+        if (err) {
+
+          console.error(
+            "Admin relist lookup error:",
+            err
+          );
+
+          return res.status(500).json({
+
+            success: false,
+
+            message:
+              "Database error"
+
+          });
+
+        }
+
+
+        if (!products.length) {
+
+          return res.status(404).json({
+
+            success: false,
+
+            message:
+              "Product not found"
+
+          });
+
+        }
+
+
+        const product =
+          products[0];
+
+
+        if (
+          product.status !==
+          "approved"
+        ) {
+
+          return res.status(400).json({
+
+            success: false,
+
+            message:
+              "Only approved products can be relisted"
+
+          });
+
+        }
+
+
+        if (
+          product.is_active
+        ) {
+
+          return res.status(400).json({
+
+            success: false,
+
+            message:
+              "Product is already listed"
+
+          });
+
+        }
+
+
+        db.query(
+          `
+          UPDATE products
+
+          SET
+            is_active = TRUE
+
+          WHERE id = ?
+          `,
+
+          [productId],
+
+          updateErr => {
+
+            if (updateErr) {
+
+              console.error(
+                "Admin product relist error:",
+                updateErr
+              );
+
+              return res.status(500).json({
+
+                success: false,
+
+                message:
+                  "Failed to relist product"
+
+              });
+
+            }
+
+
+            db.query(
+              `
+              INSERT INTO notifications
+              (
+                user_id,
+                message,
+                type
+              )
+              VALUES (?, ?, ?)
+              `,
+
+              [
+                product.vendor_id,
+
+                `Your product "${product.name}" has been relisted by an Administrator.`,
+
+                "product"
+              ],
+
+              notificationErr => {
+
+                if (notificationErr) {
+
+                  console.error(
+                    "Admin relist notification error:",
+                    notificationErr
+                  );
+
+                }
+
+              }
+            );
+
+
+            return res.json({
+
+              success: true,
+
+              message:
+                "Product relisted successfully"
+
+            });
+
+          }
+        );
+
+      }
+    );
+
+  }
+);
+
+
+/* =========================================================
+   DELETE PRODUCT
+   DELETE /api/admin/products/:id
+
+   Permanent deletion.
+
+   Existing order_items are protected by the database
+   foreign key using ON DELETE SET NULL.
+========================================================= */
+
+router.delete(
+  "/products/:id",
+  verifyAdmin,
+  (req, res) => {
+
+    const productId =
+      Number(req.params.id);
+
+
+    if (
+      !Number.isInteger(productId)
+    ) {
+
+      return res.status(400).json({
+
+        success: false,
+
+        message:
+          "Invalid product ID"
+
+      });
+
+    }
+
+
+    db.query(
+      `
+      SELECT
+        id,
+        name,
+        vendor_id,
+        image
+
+      FROM products
+
+      WHERE id = ?
+
+      LIMIT 1
+      `,
+
+      [productId],
+
+      (err, products) => {
+
+        if (err) {
+
+          console.error(
+            "Admin delete product lookup error:",
+            err
+          );
+
+          return res.status(500).json({
+
+            success: false,
+
+            message:
+              "Database error"
+
+          });
+
+        }
+
+
+        if (!products.length) {
+
+          return res.status(404).json({
+
+            success: false,
+
+            message:
+              "Product not found"
+
+          });
+
+        }
+
+
+        const product =
+          products[0];
+
+
+        db.query(
+          `
+          DELETE FROM products
+
+          WHERE id = ?
+          `,
+
+          [productId],
+
+          (deleteErr, result) => {
+
+            if (deleteErr) {
+
+              console.error(
+                "Admin product delete error:",
+                deleteErr
+              );
+
+              return res.status(500).json({
+
+                success: false,
+
+                message:
+                  "Failed to delete product"
+
+              });
+
+            }
+
+
+            if (
+              !result.affectedRows
+            ) {
+
+              return res.status(404).json({
+
+                success: false,
+
+                message:
+                  "Product could not be deleted"
+
+              });
+
+            }
+
+
+            /*
+             * Delete the uploaded image from Railway
+             * when it belongs to this product.
+             */
+
+            if (
+              product.image &&
+              !/^https?:\/\//i.test(
+                product.image
+              )
+            ) {
+
+              const imagePath =
+                path.join(
+                  __dirname,
+                  "..",
+                  product.image.replace(
+                    /^\//,
+                    ""
+                  )
+                );
+
+              fs.unlink(
+                imagePath,
+                unlinkErr => {
+
+                  if (
+                    unlinkErr &&
+                    unlinkErr.code !==
+                    "ENOENT"
+                  ) {
+
+                    console.error(
+                      "Product image delete error:",
+                      unlinkErr
+                    );
+
+                  }
+
+                }
+              );
+
+            }
+
+
+            db.query(
+              `
+              INSERT INTO notifications
+              (
+                user_id,
+                message,
+                type
+              )
+              VALUES (?, ?, ?)
+              `,
+
+              [
+                product.vendor_id,
+
+                `Your product "${product.name}" has been permanently deleted by an Administrator.`,
+
+                "product"
+              ],
+
+              notificationErr => {
+
+                if (notificationErr) {
+
+                  console.error(
+                    "Admin delete notification error:",
+                    notificationErr
+                  );
+
+                }
+
+              }
+            );
+
+
+            return res.json({
+
+              success: true,
+
+              message:
+                "Product deleted permanently"
+
+            });
+
+          }
+        );
+
+      }
+    );
+
+  }
+);
+
+
 module.exports = router;
